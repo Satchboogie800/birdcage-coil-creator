@@ -1,0 +1,19 @@
+[geometry]
+n_legs = 16
+radius_mm = 145.0
+length_mm = 290.0
+ring_width_mm = 20.0
+leg_width_mm = 20.0
+cap_gap_mm = 4.0
+feed_island_mm = 4.0
+
+[conductor]
+kind = "finite"
+
+[capacitors]
+c_ring_pF = 101.25
+n = 1.1
+
+[env]
+project_name = "Birdcage_29x29"
+design_name = "HP_Birdcage_16_29x29"
