@@ -1,0 +1,260 @@
+# -*- coding: utf-8 -*-
+#
+# Copyright (C) 2021 - 2026 Synopsys, Inc. and ANSYS, Inc. All rights reserved.
+# SPDX-License-Identifier: MIT
+#
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+from enum import Enum
+
+from ansys.aedt.core.emit_core.nodes.emit_node import EmitNode
+from ansys.aedt.core.internal.checks import min_aedt_version
+
+
+class Terminator(EmitNode):
+    """Provide terminator."""
+
+    def __init__(self, emit_obj, result_id, node_id) -> None:
+        EmitNode.__init__(self, emit_obj, result_id, node_id)
+        self._is_component = True
+
+    @property
+    @min_aedt_version("2025.2")
+    def node_type(self) -> str:
+        """The type of this emit node.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> term = app.schematic.create_component("Terminator")
+        >>> term.node_type
+
+        """
+        return self._node_type
+
+    @min_aedt_version("2027.1")
+    def export_to_csv(self, file_name: str) -> str:
+        """Export's the data for this node"""
+        return self._export_to_csv(file_name, "SelectedInputPort|SelectedOutputPort", "1|1")
+
+    @min_aedt_version("2027.1")
+    def plot(self):
+        """Bring up a Cartesian plot for this node"""
+        return self._plot("SelectedInputPort|SelectedOutputPort", "1|1")
+
+    @min_aedt_version("2025.2")
+    def duplicate(self, new_name: str = "") -> EmitNode:
+        """Duplicate this node.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> term = app.schematic.create_component("Terminator")
+        >>> term_copy = term.duplicate("term_copy")
+
+        """
+        return self._duplicate(new_name)
+
+    @min_aedt_version("2025.2")
+    def delete(self) -> None:
+        """Delete this node.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> term = app.schematic.create_component("Terminator")
+        >>> term.delete()
+
+        """
+        self._delete()
+
+    @property
+    @min_aedt_version("2025.2")
+    def table_data(self) -> list[tuple]:
+        """Parametric VSWR Table.
+        Table consists of 3 columns.
+        Min:
+            Value should be between 1 and 100e9.
+        Max:
+            Value should be between 1 and 100e9.
+        VSWR:
+            Value should be between 1 and 100.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> term = app.schematic.create_component("Terminator")
+        >>> term.table_data = [(2, 25.0)]
+
+        """
+        return self._get_table_data()
+
+    @table_data.setter
+    @min_aedt_version("2025.2")
+    def table_data(self, value: list[tuple]) -> None:
+        self._set_table_data(value)
+
+    @property
+    @min_aedt_version("2025.2")
+    def filename(self) -> str:
+        """Name of file defining the Terminator.
+
+        Value should be a full file path.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> term = app.schematic.create_component("Terminator")
+        >>> term.terminator_type = Terminator.TerminatorTypeOption.BY_FILE
+        >>> term.filename = "example_value"
+
+        """
+        val = self._get_property("Filename")
+        return val
+
+    @filename.setter
+    @min_aedt_version("2025.2")
+    def filename(self, value: str) -> None:
+        self._set_property("Filename", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def noise_temperature(self) -> float:
+        """System Noise temperature (K) of the component.
+
+        Value should be between 0 and 1000.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> term = app.schematic.create_component("Terminator")
+        >>> term.noise_temperature = 290.0
+
+        """
+        val = self._get_property("Noise Temperature")
+        return float(val)
+
+    @noise_temperature.setter
+    @min_aedt_version("2025.2")
+    def noise_temperature(self, value: float) -> None:
+        self._set_property("Noise Temperature", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def notes(self) -> str:
+        """Expand to view/edit notes stored with the project.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> term = app.schematic.create_component("Terminator")
+        >>> term.notes = "example_value"
+
+        """
+        val = self._get_property("Notes")
+        return val
+
+    @notes.setter
+    @min_aedt_version("2025.2")
+    def notes(self, value: str) -> None:
+        self._set_property("Notes", f"{value}")
+
+    class TerminatorTypeOption(Enum):
+        BY_FILE = "ByFile"
+        PARAMETRIC = "Parametric"
+
+    @property
+    @min_aedt_version("2025.2")
+    def terminator_type(self) -> TerminatorTypeOption:
+        """Terminator Type.
+
+        Type of terminator model to use. Options include: By File (measured or
+        simulated) or Parametric.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> term = app.schematic.create_component("Terminator")
+        >>> term.terminator_type = Terminator.TerminatorTypeOption.BY_FILE
+
+        """
+        val = self._get_property("Terminator Type")
+        try:
+            val = self.TerminatorTypeOption(val)
+        except ValueError:
+            val = self.TerminatorTypeOption[val.upper()]
+        return val
+
+    @terminator_type.setter
+    @min_aedt_version("2025.2")
+    def terminator_type(self, value: TerminatorTypeOption) -> None:
+        self._set_property("Terminator Type", f"{value.value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def vswr(self) -> float:
+        """VSWR.
+
+        The Voltage Standing Wave Ratio (VSWR) due to the impedance mismatch
+        between the terminator and the connected component (RF System, Antenna,
+        etc).
+
+        Value should be between 1.0 and 100.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> term = app.schematic.create_component("Terminator")
+        >>> term.terminator_type = Terminator.TerminatorTypeOption.PARAMETRIC
+        >>> term.vswr = 1.0
+
+        """
+        val = self._get_property("VSWR")
+        return float(val)
+
+    @vswr.setter
+    @min_aedt_version("2025.2")
+    def vswr(self, value: float) -> None:
+        self._set_property("VSWR", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def warnings(self) -> str:
+        """Warning(s) for this node.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> term = app.schematic.create_component("Terminator")
+        >>> term.warnings
+
+        """
+        val = self._get_property("Warnings")
+        return val

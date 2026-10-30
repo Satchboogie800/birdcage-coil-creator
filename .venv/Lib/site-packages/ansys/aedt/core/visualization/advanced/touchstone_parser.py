@@ -1,0 +1,949 @@
+# -*- coding: utf-8 -*-
+#
+# Copyright (C) 2021 - 2026 Synopsys, Inc. and ANSYS, Inc. All rights reserved.
+# SPDX-License-Identifier: MIT
+#
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+from __future__ import annotations
+
+import bisect
+from copy import copy
+import itertools
+import os
+from pathlib import Path
+import re
+import tempfile
+import warnings
+
+import numpy as np
+
+from ansys.aedt.core.aedt_logger import pyaedt_logger as logger
+from ansys.aedt.core.base import PyAedtBase
+from ansys.aedt.core.generic.file_utils import open_file
+from ansys.aedt.core.generic.general_methods import pyaedt_function_handler
+from ansys.aedt.core.internal.aedt_versions import aedt_versions
+from ansys.aedt.core.internal.checks import requires_graphical_dependency
+from ansys.aedt.core.internal.errors import AEDTRuntimeError
+
+# NOTE: Create a base class that conditionally inherits from skrf.Network.
+# This is to avoid case sceario where scikit-rf is not installed, but
+# TouchstoneData is still imported for type hinting or other purposes.
+# For more information on this workaround, see https://github.com/ansys/pyaedt/pull/7255
+try:
+    import skrf as rf
+
+    _TouchstoneBase = rf.Network
+except ImportError:
+    warnings.warn(
+        "The Scikit-rf module is required to run functionalities of TouchstoneData.\n"
+        "Install with \n\npip install scikit-rf"
+    )
+
+    # If scikit-rf is not available, create an empty base class
+    # This avoids MRO (Method Resolution Order) conflicts with PyAedtBase
+    class _TouchstoneBase:
+        """Dummy base class when scikit-rf is not available."""
+
+        pass
+
+
+REAL_IMAG = "RI"
+"""Real imag."""
+MAG_ANGLE = "MA"
+"""Mag angle."""
+DB_ANGLE = "DB"
+"""Db angle."""
+
+keys = {REAL_IMAG: ("real", "imag"), MAG_ANGLE: ("mag", "deg"), DB_ANGLE: ("db20", "deg")}
+"""Value for keys."""
+
+
+class TouchstoneData(_TouchstoneBase, PyAedtBase):
+    """Contains data information from Touchstone Read call.
+
+    Parameters
+    ----------
+    solution_data : :class:`ansys.aedt.core.modules.solutions.SolutionData`, optional
+        HFSS solution data. The default is ``None``.
+    touchstone_file : str or :class:'pathlib.Path', optional
+        Path for the touchstone file. The default is ``None``.
+
+    Examples
+    --------
+    >>> from ansys.aedt.core.visualization.advanced.touchstone_parser import TouchstoneData
+    >>> obj = TouchstoneData()
+
+    """
+
+    def __init__(self, solution_data=None, touchstone_file=None) -> None:
+        # Check if scikit-rf is available by inspecting the base class
+        if _TouchstoneBase.__name__ == "_TouchstoneBase":
+            raise ImportError(
+                "The Scikit-rf module is required to use TouchstoneData.\nInstall with: pip install scikit-rf"
+            )
+
+        if touchstone_file is not None:
+            touchstone_file = Path(touchstone_file)
+
+        if solution_data is not None:
+            self.solution_data = solution_data
+            freq_points = solution_data.primary_sweep_values
+            ports = []
+            for i in solution_data.expressions:
+                m = re.search(r"S\(\s*(\S+)\s*,\s*(\S+)\s*\)", i)
+                if m:
+                    ports.append(m.group(1))
+                    ports.append(m.group(2))
+
+            ports = list(set(ports))
+            ports.sort()
+            port_order = {ports.index(p): p for p in ports}
+            sdata_3d = np.zeros([len(freq_points), len(ports), len(ports)], dtype=complex)
+            for expression in solution_data.expressions:
+                m = re.search(r"S\(\s*(\S+)\s*,\s*(\S+)\s*\)", expression)
+                if m:
+                    p_a = m.group(1)
+                    p_b = m.group(2)
+                p_a_number = ports.index(p_a)
+                p_b_number = ports.index(p_b)
+                sdata_real = solution_data.get_expression_data(expression, formula="real", convert_to_SI=True)[1]
+                sdata_img = solution_data.get_expression_data(expression, formula="imag", convert_to_SI=True)[1]
+                sdata_2d = np.array(sdata_real, dtype=complex) + 1j * np.array(sdata_img, dtype=complex)
+                sdata_3d[:, p_a_number, p_b_number] = sdata_2d
+                sdata_3d[:, p_b_number, p_a_number] = sdata_2d
+
+            var = {}
+            for name, value in solution_data.active_variation.items():
+                var[name] = value
+            params = {"variant": var, "port_order": port_order}
+            rf.Network.__init__(self, s=sdata_3d, frequency=freq_points, z0=50.0 + 0.0j, params=params)
+            rf.stylely()
+            self.port_names = ports
+
+        elif touchstone_file and touchstone_file.is_file():
+            rf.Network.__init__(self, touchstone_file)
+            if not self.port_names:
+                pattern = re.compile(r"!\s*port\[[^\]]+\]\s*=\s*(\S+)", re.IGNORECASE)
+                with open(touchstone_file, "r") as f:
+                    lines = f.readlines()
+                    pnames = []
+                    for line in lines:
+                        if pattern.match(line):
+                            pnames.append(pattern.match(line).group(1).strip())
+                    if not pnames:
+                        pnames = [f"{i + 1}" for i in range(self.nports)]
+                self.port_names = pnames
+            else:
+                self.port_names = [pname.strip() for pname in self.port_names]
+        self.log_x = True
+
+    @pyaedt_function_handler()
+    def reduce(
+        self, ports: list[str] | list[int], output_file: str | Path | None = None, reordered: bool = True
+    ) -> str:
+        """Reduce the Touchstone file and export it.
+
+        Parameters
+        ----------
+        ports : list
+            List of ports or port indexes to use for the reduction.
+        output_file : str or :class:'pathlib.Path', optional
+            Output file path. The default is ``None``.
+        reordered : bool, optional
+            Whether to reorder the ports in the output file with given input order or not. The default is ``True``.
+
+        Returns
+        -------
+        str
+            Output file path
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.visualization.advanced.touchstone_parser import TouchstoneData
+        >>> obj = TouchstoneData()
+        >>> obj.reduce(ports=[1, 2, 3])
+
+        """
+        name = f"temp_touchstone.s{len(self.port_names)}p"
+        temp_touch = Path(tempfile.gettempdir()) / name
+        self.write_touchstone(temp_touch)
+        network = rf.Network(str(temp_touch))
+        reduced = []
+        reduced_names = []
+        for p in ports:
+            if isinstance(p, str) and p in self.port_names:
+                reduced.append(self.port_names.index(p))
+                reduced_names.append(p)
+            elif isinstance(p, int) and p < len(self.port_names):
+                reduced.append(p)
+                reduced_names.append(self.port_names[p])
+        if reordered and reduced != sorted(reduced):
+            network = network.renumbered(reduced, sorted(reduced))
+        reduced_network = network.subnetwork(sorted(reduced))
+
+        if output_file:
+            output_file = Path(output_file)
+
+        if not output_file:
+            new_name = temp_touch.stem + f"_reduced.s{len(reduced)}p"
+            output_file = temp_touch.parent / new_name
+        elif output_file and f"s{len(reduced)}p" not in output_file.suffix:
+            raise AEDTRuntimeError(f"Wrong number of ports in output file name. Ports should be s{len(reduced)}p")
+
+        # Save the reduced 4-port network to a new Touchstone file
+        reduced_network.write_touchstone(output_file)
+
+        return str(output_file)
+
+    @pyaedt_function_handler()
+    def get_coupling_in_range(
+        self,
+        start_frequency: float = 1e9,
+        stop_frequency: float = 10e9,
+        low_loss: float = -40.0,
+        high_loss: float = -60.0,
+        include_same_component: bool = True,
+        component_filter: list | None = None,
+        include_filter: bool = True,
+        frequency_sample: int = 5,
+        output_file: str | Path | None = None,
+    ) -> list[tuple]:
+        """Get coupling losses, excluding return loss, that has at least one frequency point between a range of
+        losses.
+
+        Parameters
+        ----------
+        start_frequency : float, optional
+            Frequency value below which no check is done. The default is ``1e9``.
+        stop_frequency : float, optional
+            Frequency value above which no check is done. The default is ``10e9``.
+        low_loss: float, optional
+            Minimum loss threshold in dB. The default is ``-40.0``.
+        high_loss: float, optional
+            Maximum loss threshold in dB. The default is ``-60.0``.
+        include_same_component: bool, optional
+            Whether to include S-parameters between ports on the same component. The default is ``True``.
+        component_filter: list, optional
+            List of component names to filter. The default is ``None``.
+        include_filter: bool, optional
+            Whether to include or exclude components from `component_filter`.
+            When ``True``, only components in the filter list are scanned.
+            When ``False``, components in the filter list are excluded from the scan.
+            The default is ``True``.
+        frequency_sample : integer, optional
+            Frequency sample step at which coupling check is done. The default is ``5``.
+        output_file : str, or :class:'pathlib.Path', optional
+            Output file path to save identified coupling information. The default is ``None``.
+
+        Returns
+        -------
+         list:
+            List of tuples with S-parameter indices ``(i, j)`` in the range [high_loss, low_loss].
+
+        Examples
+        --------
+        >>> # Basic usage - scan all components in frequency range
+        >>> touchstone = TouchstoneData(touchstone_file="design.s16p")
+        >>> coupling = touchstone.get_coupling_in_range(
+        ...     start_frequency=2e9, stop_frequency=5e9, high_loss=-60.0, low_loss=-64.0
+        ... )
+
+        >>> # Include only specific components, returns S-parameters only between U1 and X1 ports
+        >>> coupling = touchstone.get_coupling_in_range(component_filter=["U1", "X1"], include_filter=True)
+
+        >>> # Exclude specific components from scan, returns S-parameters from all components except U9
+        >>> coupling = touchstone.get_coupling_in_range(component_filter=["U9"], include_filter=False)
+
+        >>> # Exclude same-component coupling, excludes S(U1_xxx, U1_yyy), S(X1_xxx, X1_yyy).
+        >>> coupling = touchstone.get_coupling_in_range(include_same_component=False)
+        >>>
+
+        >>> # Save results to file with custom frequency sampling
+        >>> coupling = touchstone.get_coupling_in_range(frequency_sample=10, output_file="coupling_results.txt")
+
+        For an S-parameter file with 16 ports on three components (U9, U1, X1):
+        - The full matrix is 16x16 = 256 S-parameters per frequency
+        - The diagonal S(i,i) is excluded from the scan
+        - Half the matrix is excluded assuming S(i,j) = S(j,i)
+        - Only the upper triangle above the diagonal is scanned
+
+        When `start_frequency=2e9` and `stop_frequency=5e9`, only S-parameters between these
+        frequencies are scanned, with sampling every `frequency_sample` points.
+
+        Output file format when a value is found in the [high_loss, low_loss] range:
+            S(U1_AU17,X1_B14) Loss= -50.61dB Freq= 1.007GHz
+            S(U1_AU17,X1_B15) Loss= -49.38dB Freq= 1.007GHz
+            S(U9_20,X1_A11) Loss= -45.19dB Freq= 1.374GHz
+
+        Usage of `include_same_component`:
+        - When `False`, excludes S-parameters between ports on the same component
+        - All S(U1_xxx, U1_yyy), S(X1_xxx, X1_yyy), S(U9_xxx, U9_yyy) are excluded
+
+        Usage of `component_filter` and `include_filter`:
+        - `component_filter=["U9"]` with `include_filter=False`: scan only U1 and X1 ports
+        - `component_filter=["X1", "U1"]` with `include_filter=True`: scan only U1↔other and X1↔other
+
+        """
+        if component_filter is None:
+            component_filter = []
+
+        # identify frequency index at which to start and stop the check
+        k_start = bisect.bisect_left(self.frequency.f, start_frequency)
+        k_stop = bisect.bisect_right(self.frequency.f, stop_frequency)
+
+        s_db = self.s_db[:, :, :]
+        temp_list = []
+        temp_file = []
+
+        for i in range(self.number_of_ports):
+            refdes1 = self.port_names[i].split("_")[0]
+            if len(component_filter) != 0:
+                if include_filter:
+                    if not any(refdes1.lower() in x.lower() for x in component_filter):
+                        continue
+                else:
+                    if any(refdes1.lower() in x.lower() for x in component_filter):
+                        continue
+            for j in range(i, self.number_of_ports):
+                if i == j:
+                    continue
+                refdes2 = self.port_names[j].split("_")[0]
+                if len(component_filter) != 0 and not include_filter:
+                    if any(refdes2.lower() in x.lower() for x in component_filter):
+                        continue
+                if refdes1.lower() == refdes2.lower() and not include_same_component:
+                    continue
+                for k in range(k_start, k_stop, frequency_sample):
+                    loss = s_db[k, i, j]
+                    if high_loss < loss < low_loss:
+                        temp_list.append((i, j))
+                        sxy = f"S({self.port_names[i]},{self.port_names[j]})"
+                        line = f"{sxy} Loss= {loss:.2f}dB Freq= {(self.f[k] * 1e-9):.3f}GHz\n"
+                        temp_file.append(line)
+                        break
+        if output_file is not None:
+            output_file = Path(output_file)
+            if output_file.is_file():
+                logger.info("File " + str(output_file) + " exist and we be replace by new one.")
+            with open_file(output_file, "w") as f:
+                for s in temp_file:
+                    f.write(s)
+            logger.info("File " + str(output_file) + " created.")
+            f.close()
+        return temp_list
+
+    @pyaedt_function_handler()
+    def get_insertion_loss_index(self, threshold: float = -3) -> list:
+        """Get all insertion losses.
+
+        The first frequency point is used to determine whether two ports are shorted.
+
+        Parameters
+        ----------
+        threshold : float, int, optional
+            Threshold to determine shorted ports in dB. The default value is ``-3``.
+
+        Returns
+        -------
+         list
+            List of index couples representing insertion losses of excitations.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.visualization.advanced.touchstone_parser import TouchstoneData
+        >>> obj = TouchstoneData()
+        >>> obj.get_insertion_loss_index(threshold=1.0)
+
+        """
+        temp_list = []
+        s_db = self.s_db[0:2, :, :]
+        for i in self.port_tuples:
+            if i[0] != i[1]:
+                loss = s_db[0, i[0], i[1]]
+                if loss > threshold:
+                    temp_list.append(i)
+                elif loss < -90:
+                    loss = s_db[1, i[0], i[1]]
+                    if loss > threshold:
+                        temp_list.append(i)
+        return temp_list
+
+    @requires_graphical_dependency("matplotlib")
+    def plot_insertion_losses(self, threshold: float = -3, plot: bool = True):
+        """Plot all insertion losses.
+
+        The first frequency point is used to determine whether two ports are shorted.
+
+        Parameters
+        ----------
+        threshold : float, int, optional
+            Threshold to determine shorted ports in dB. The default value is ``-3``.
+        plot : bool, optional
+            Whether to plot. The default is ``True``.
+
+        Returns
+        -------
+        list
+            List of tuples representing insertion loss excitations.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.visualization.advanced.touchstone_parser import TouchstoneData
+        >>> obj = TouchstoneData()
+        >>> obj.plot_insertion_losses(threshold=1.0, plot=True)
+
+        """
+        import matplotlib.pyplot as plt
+
+        temp_list = self.get_insertion_loss_index(threshold=threshold)
+        if plot:
+            for i in temp_list:
+                self.plot_s_db(*i, logx=self.log_x)
+            plt.show()
+        return temp_list
+
+    @requires_graphical_dependency("matplotlib")
+    def plot(self, index_couples: list = None, show: bool = True) -> bool:
+        """Plot a list of curves.
+
+        Parameters
+        ----------
+        index_couples : list, optional
+            List of indexes couple to plot. The default value is ``None`` to plot all ``port_tuples``.
+        show : bool
+            Whether to plot. The default value is ``True``.
+
+        Returns
+        -------
+        :class:`matplotlib.plt`
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.visualization.advanced.touchstone_parser import TouchstoneData
+        >>> obj = TouchstoneData()
+        >>> obj.plot(index_couples=["Box1"], show=True)
+
+        """
+        import matplotlib.pyplot as plt
+
+        if not index_couples:
+            index_couples = self.port_tuples[:]
+
+        for i in index_couples:
+            self.plot_s_db(*i, logx=self.log_x)
+        if show:
+            plt.show()
+        return True
+
+    @requires_graphical_dependency("matplotlib")
+    def plot_return_losses(self) -> bool:
+        """Plot all return losses.
+
+        Returns
+        -------
+        bool
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.visualization.advanced.touchstone_parser import TouchstoneData
+        >>> obj = TouchstoneData()
+        >>> obj.plot_return_losses()
+
+        """
+        import matplotlib.pyplot as plt
+
+        for i in np.arange(self.number_of_ports):
+            self.plot_s_db(i, i, logx=self.log_x)
+        plt.show()
+        return True
+
+    def get_mixed_mode_touchstone_data(
+        self, num_of_diff_ports: int = None, port_ordering: str = "1234"
+    ) -> "TouchstoneData":
+        """Transform network from single ended parameters to generalized mixed mode parameters.
+
+        Parameters
+        ----------
+        num_of_diff_ports : int, optional
+            The number of differential ports.
+        port_ordering : str, optional
+            The current port ordering. Options are ``"1234"``, ``"1324"``. The default
+            is ``1234``.
+
+        Returns
+        -------
+        class:`ansys.aedt.core.generic.touchstone_parser.TouchstoneData`
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.visualization.advanced.touchstone_parser import TouchstoneData
+        >>> obj = TouchstoneData()
+        >>> obj.get_mixed_mode_touchstone_data(num_of_diff_ports=[1, 2, 3], port_ordering=1)
+
+        """
+        ts_diff = copy(self)
+        port_count = len(ts_diff.port_names)
+
+        if num_of_diff_ports is None:
+            num_of_diff_ports = port_count // 4 * 2
+
+        if port_ordering == "1234":
+            pass
+        elif port_ordering == "1324":
+            temp_port_order = np.arange(port_count)
+            for i in np.arange(port_count):
+                if i % 4 == 1:
+                    temp_port_order[i] = temp_port_order[i] + 1
+                elif i % 4 == 2:
+                    temp_port_order[i] = temp_port_order[i] - 1
+
+            port_order = np.arange(port_count)
+            new_port_order = np.arange(port_count)
+            new_port_order[: len(temp_port_order)] = temp_port_order
+
+            ts_diff.renumber(port_order, new_port_order)
+        else:
+            logger.error("Invalid input provided for 'port_ordering'.")
+            return False
+
+        ts_diff.se2gmm(num_of_diff_ports)
+
+        new_port_names = [f"D{i}" for i in np.arange(num_of_diff_ports)]
+        new_port_names.extend([f"C{i}" for i in np.arange(num_of_diff_ports)])
+        ts_diff.port_names[: len(new_port_names)] = new_port_names
+        return ts_diff
+
+    @pyaedt_function_handler()
+    def get_return_loss_index(self, excitation_name_prefix: str = "") -> list:
+        """Get the list of all the return loss from a list of excitations.
+
+        If no excitation is provided it will provide a full list of return losses.
+
+        Example: excitation_names ["1","2"] is_touchstone_expression=False output ["S(1,1)", S(2,2)]
+        Example: excitation_names ["S(1,1)","S(1,2)", S(2,2)] is_touchstone_expression=True output ["S(1,1)", S(2,2)]
+
+        Parameters
+        ----------
+        excitation_name_prefix :str, optional
+            Prefix of the excitation. The default value is ``""``.
+
+        Returns
+        -------
+        list
+            List of index couples representing return losses of excitations.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.visualization.advanced.touchstone_parser import TouchstoneData
+        >>> obj = TouchstoneData()
+        >>> obj.get_return_loss_index(excitation_name_prefix=1)
+
+        """
+        values = []
+        if excitation_name_prefix:
+            excitation_names = [i for i in self.port_names if excitation_name_prefix.lower() in i.lower()]
+        else:
+            excitation_names = [i for i in self.port_names]
+        for i in excitation_names:
+            values.append([self.port_names.index(i), self.port_names.index(i)])
+        return values
+
+    @pyaedt_function_handler()
+    def get_insertion_loss_index_from_prefix(self, tx_prefix: str, rx_prefix: str) -> list:
+        """Get the list of all the insertion losses from prefix.
+
+        Parameters
+        ----------
+        tx_prefix : str
+            Prefix for TX (eg. "DIE").
+        rx_prefix : str
+            Prefix for RX (eg. "BGA").
+
+        Returns
+        -------
+        list
+            List of index couples representing Insertion Losses of excitations.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.visualization.advanced.touchstone_parser import TouchstoneData
+        >>> obj = TouchstoneData()
+        >>> obj.get_insertion_loss_index_from_prefix(tx_prefix=1, rx_prefix=1)
+
+        """
+        trlist = [i for i in self.port_names if tx_prefix in i]
+        receiver_list = [i for i in self.port_names if rx_prefix in i]
+        values = []
+        if len(trlist) != len(receiver_list):
+            logger.error("TX and RX should be same length lists.")
+            return False
+        for i, j in zip(trlist, receiver_list):
+            values.append([self.port_names.index(i), self.port_names.index(j)])
+        return values
+
+    @pyaedt_function_handler()
+    def get_next_xtalk_index(self, tx_prefix: str = "") -> list:
+        """Get the list of all the Near End XTalk a list of excitation.
+
+        Optionally prefix can be used to retrieve driver names.
+        Example: excitation_names ["1", "2", "3"] output ["S(1,2)", "S(1,3)", "S(2,3)"].
+
+        Parameters
+        ----------
+        tx_prefix :str, optional
+            Prefix for TX (eg. "DIE"). The default value is ``""``.
+
+        Returns
+        -------
+        list
+            List of index couples representing Near End XTalks.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.visualization.advanced.touchstone_parser import TouchstoneData
+        >>> obj = TouchstoneData()
+        >>> obj.get_next_xtalk_index(tx_prefix=1)
+
+        """
+        if tx_prefix:
+            trlist = [i for i in self.port_names if tx_prefix in i]
+        else:
+            trlist = self.port_names
+        values = []
+        for i in trlist:
+            k = trlist.index(i) + 1
+            while k < len(trlist):
+                values.append([self.port_names.index(i), self.port_names.index(trlist[k])])
+                k += 1
+        return values
+
+    @pyaedt_function_handler()
+    def get_fext_xtalk_index_from_prefix(
+        self, tx_prefix: str, rx_prefix: str, skip_same_index_couples: bool = True
+    ) -> list:
+        """Get the list of all the Far End XTalk from a list of excitations and a prefix that will
+        be used to retrieve driver and receivers names.
+        If skip_same_index_couples is true, the tx and rx with same index
+        position will be considered insertion losses and excluded from the list.
+
+        Parameters
+        ----------
+        tx_prefix : str
+            prefix for TX (eg. "DIE")
+        rx_prefix : str
+            prefix for RX (eg. "BGA")
+        skip_same_index_couples : bool
+            Boolean ignore TX and RX couple with same index. The default value is ``True``.
+
+        Returns
+        -------
+        list
+            List of index couples representing Far End XTalks.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.visualization.advanced.touchstone_parser import TouchstoneData
+        >>> obj = TouchstoneData()
+        >>> obj.get_fext_xtalk_index_from_prefix(tx_prefix=1, rx_prefix=1)
+
+        """
+        trlist = [i for i in self.port_names if tx_prefix in i]
+        reclist = [i for i in self.port_names if rx_prefix in i]
+        values = []
+        for i in trlist:
+            for k in reclist:
+                if not skip_same_index_couples or reclist.index(k) != trlist.index(i):
+                    values.append([self.port_names.index(i), self.port_names.index(k)])
+        return values
+
+    @requires_graphical_dependency("matplotlib")
+    def plot_next_xtalk_losses(self, tx_prefix: str = "") -> bool:
+        """Plot all next crosstalk curves.
+
+        Parameters
+        ----------
+        tx_prefix: str, optional
+            Prefix for TX. The default value is ``""``.
+
+        Returns
+        -------
+        bool
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.visualization.advanced.touchstone_parser import TouchstoneData
+        >>> obj = TouchstoneData()
+        >>> obj.plot_next_xtalk_losses(tx_prefix=1)
+
+        """
+        import matplotlib.pyplot as plt
+
+        index = self.get_next_xtalk_index(tx_prefix=tx_prefix)
+
+        for ind in index:
+            self.plot_s_db(ind[0], ind[1], logx=self.log_x)
+        plt.show()
+        return True
+
+    @requires_graphical_dependency("matplotlib")
+    def plot_fext_xtalk_losses(self, tx_prefix: str, rx_prefix: str, skip_same_index_couples: bool = True) -> bool:
+        """Plot all fext crosstalk curves.
+
+        Parameters
+        ----------
+        tx_prefix : str
+            Prefix for TX (eg. "DIE").
+        rx_prefix : str
+            Prefix for RX (eg. "BGA").
+        skip_same_index_couples : bool, optional
+            Boolean ignore TX and RX couple with same index. The default value is ``True``.
+
+        Returns
+        -------
+        bool
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.visualization.advanced.touchstone_parser import TouchstoneData
+        >>> obj = TouchstoneData()
+        >>> obj.plot_fext_xtalk_losses(tx_prefix=1, rx_prefix=1)
+
+        """
+        import matplotlib.pyplot as plt
+
+        index = self.get_fext_xtalk_index_from_prefix(
+            tx_prefix=tx_prefix, rx_prefix=rx_prefix, skip_same_index_couples=skip_same_index_couples
+        )
+        for ind in index:
+            self.plot_s_db(ind[0], ind[1], logx=self.log_x)
+        plt.show()
+        return True
+
+    @pyaedt_function_handler()
+    @requires_graphical_dependency("matplotlib")
+    def get_worst_curve(
+        self,
+        freq_min: float = None,
+        freq_max: float = None,
+        worst_is_higher: bool = True,
+        curve_list: list = None,
+        plot: bool = True,
+    ) -> tuple:
+        """Analyze a solution data object with multiple curves and find the worst curve.
+
+        Take the mean of the magnitude over the frequency range.
+
+        Parameters
+        ----------
+        freq_min : float, optional
+            Minimum frequency to analyze in GHz (None to 0). The default value is ``None``.
+        freq_max : float, optional
+            Maximum frequency to analyze in GHz (None to max freq). The default value is ``None``.
+        worst_is_higher : bool
+            Worst curve is the one with higher mean value. The default value is ``True``.
+        curve_list : list
+            List of [m,n] index of curves on which to search. None to search on all curves.
+            The default value is ``None``.
+        plot : bool, optional
+            Whether to plot or not the chart. The default value is ``True``.
+
+        Returns
+        -------
+        tuple
+            Worst element, dictionary of ordered expression.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.visualization.advanced.touchstone_parser import TouchstoneData
+        >>> obj = TouchstoneData()
+        >>> obj.get_worst_curve(freq_min=1.0, freq_max=1.0)
+
+        """
+        import matplotlib.pyplot as plt
+
+        return_loss_freq = [float(i.center) for i in list(self.frequency)]
+        if not freq_min:
+            lower_id = 0
+        else:
+            lower_id = next(x[0] for x in enumerate(return_loss_freq) if x[1] >= freq_min * 1e9)
+        if not freq_max:
+            higher_id = len(return_loss_freq) - 1
+        else:
+            if freq_max * 1e9 >= return_loss_freq[-1]:
+                higher_id = len(return_loss_freq) - 1
+            else:
+                higher_id = next(x[0] for x in enumerate(return_loss_freq) if x[1] >= freq_max * 1e9)
+
+        dict_means = {}
+        if not curve_list:
+            curve_list = list(itertools.combinations(range(0, len(self.port_names)), 2))
+            for i in range(0, len(self.port_names)):
+                curve_list.append([i, i])
+        for el in curve_list:
+            data1 = np.absolute(self.s[lower_id:higher_id, el[0], el[1]])
+            mean1 = sum(data1) / len(data1)
+            dict_means[tuple(el)] = mean1
+        dict_means = dict(sorted(dict_means.items(), key=lambda item: item[1], reverse=worst_is_higher))
+        worst_el = next(iter(dict_means))
+        if plot:  # pragma: no cover
+            self.plot_s_db(*worst_el, logx=self.log_x)
+            plt.show()
+        return worst_el, dict_means
+
+
+@pyaedt_function_handler()
+def read_touchstone(input_file: str) -> TouchstoneData:
+    """Load the contents of a Touchstone file into an NPort.
+
+    Parameters
+    ----------
+    input_file : str
+        The path of the touchstone file.
+
+    Returns
+    -------
+    :class:`ansys.aedt.core.generic.touchstone_parser.TouchstoneData`
+        NPort holding data contained in the touchstone file.
+
+    Examples
+    --------
+    >>> from ansys.aedt.core.visualization.advanced.touchstone_parser import read_touchstone
+    >>> read_touchstone(input_file="C:/Temp/network.s2p")
+
+    """
+    data = TouchstoneData(touchstone_file=input_file)
+    return data
+
+
+@pyaedt_function_handler()
+def check_touchstone_files(input_dir: str = "", passivity: bool = True, causality: bool = True) -> dict:
+    """Check passivity and causality for all Touchstone files included in the folder.
+
+    .. warning::
+
+        Do not execute this function with untrusted function argument, environment
+        variables or pyaedt global settings.
+        See the :ref:`security guide<ref_security_consideration>` for details.
+
+    Parameters
+    ----------
+    input_dir : str or :class:'pathlib.Path', optional
+        Folder path. The default is ``""``.
+    passivity : bool, optional
+        Whether the passivity check is enabled, The default is ``True``.
+    causality : bool, optional
+        Whether the causality check is enabled. The default is ``True``.
+
+    Returns
+    -------
+    dict
+        Dictionary with the SNP file name as the key and a list if the passivity and/or causality checks are enabled.
+        The first element in the list is a str with ``"passivity"`` or ``"causality"`` as a value. The second element
+        is a Boolean that is set to ``True`` when the criteria passed or ``False`` otherwise. The last element
+        is a string with the log information.
+
+    Examples
+    --------
+    >>> from ansys.aedt.core.visualization.advanced.touchstone_parser import check_touchstone_files
+    >>> check_touchstone_files(input_dir="C:/Temp", passivity=True)
+
+    """
+    import subprocess  # nosec
+
+    out = {}
+    snp_files = find_touchstone_files(input_dir)
+    if not snp_files:
+        return out
+    aedt_install_folder = list(aedt_versions.installed_versions.values())[0]
+    for file_name, path in snp_files.items():
+        out[file_name] = []
+        if os.name == "nt":
+            genequiv_path = Path(aedt_install_folder) / "genequiv.exe"
+        else:
+            genequiv_path = Path(aedt_install_folder) / "genequiv"
+        cmd = [str(genequiv_path)]
+        if passivity:
+            cmd.append("-checkpassivity")
+        if causality:
+            cmd.append("-checkcausality")
+
+        cmd.append(path)
+        my_env = os.environ.copy()
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=my_env, text=True, check=True)  # nosec
+        output_lst = result.stdout.splitlines()
+
+        for line in output_lst:
+            if "Input data" in line and passivity:
+                msg_log = line[17:]
+                is_passive = True
+                if "non-passive" in msg_log:
+                    is_passive = False
+                out[file_name].append(["passivity", is_passive, msg_log])
+            if "Maximum causality" in line and causality:
+                msg_log = line[17:]
+                is_causal = True
+                try:
+                    causality_check = float(msg_log.split("Maximum causality error: ")[-1].split("for entry")[0])
+                    if not causality_check == 0.0:
+                        is_causal = False
+                except Exception:
+                    is_causal = False
+                    raise Exception("Failed evaluating causality value.")
+                out[file_name].append(["causality", is_causal, msg_log])
+            if "Causality check is inconclusive" in line and causality:
+                is_causal = False
+                out[file_name].append(["causality", is_causal, line[17:]])
+    return out
+
+
+@pyaedt_function_handler()
+def find_touchstone_files(input_dir: str) -> dict:
+    """Get all Touchstone files in a directory.
+
+    Parameters
+    ----------
+    input_dir : str or :class:'pathlib.Path'
+        Folder path.
+
+    Returns
+    -------
+    dict
+        Dictionary with the SNP file names as the key and the absolute path as the value.
+
+    Examples
+    --------
+    >>> from ansys.aedt.core.visualization.advanced.touchstone_parser import find_touchstone_files
+    >>> find_touchstone_files(input_dir="C:/Temp")
+
+    """
+    out = {}
+    input_dir = Path(input_dir)
+    if not input_dir.exists():
+        return out
+    pat_snp = re.compile(r"\.s\d+p$", re.IGNORECASE)
+    files = {f.name: input_dir / f.name for f in input_dir.iterdir() if f.is_file() and re.search(pat_snp, f.name)}
+
+    pat_ts = re.compile(r"\.ts$")
+    for f in input_dir.iterdir():
+        if f.is_file() and re.search(pat_ts, f.name):
+            files[f.name] = f.resolve()
+
+    return files

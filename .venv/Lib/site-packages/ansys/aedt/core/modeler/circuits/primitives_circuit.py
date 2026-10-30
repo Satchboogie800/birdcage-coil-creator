@@ -1,0 +1,2340 @@
+# -*- coding: utf-8 -*-
+#
+# Copyright (C) 2021 - 2026 Synopsys, Inc. and ANSYS, Inc. All rights reserved.
+# SPDX-License-Identifier: MIT
+#
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+import locale
+import math
+from pathlib import Path
+import re
+import secrets
+
+from ansys.aedt.core.base import PyAedtBase
+from ansys.aedt.core.generic.constants import AEDT_UNITS
+from ansys.aedt.core.generic.file_utils import generate_unique_name
+from ansys.aedt.core.generic.file_utils import open_file
+from ansys.aedt.core.generic.file_utils import recursive_glob
+from ansys.aedt.core.generic.general_methods import filter_string
+from ansys.aedt.core.generic.general_methods import pyaedt_function_handler
+from ansys.aedt.core.generic.numbers_utils import Quantity
+from ansys.aedt.core.generic.numbers_utils import is_number
+from ansys.aedt.core.internal.load_aedt_file import load_keyword_in_aedt_file
+from ansys.aedt.core.modeler.circuits.object_3d_circuit import CircuitComponent
+from ansys.aedt.core.modeler.circuits.object_3d_circuit import Excitations
+from ansys.aedt.core.modeler.circuits.object_3d_circuit import Wire
+
+
+class CircuitComponents(PyAedtBase):
+    """Circuit components class.
+
+    Manages all circuit components for Nexxim and Twin Builder.
+
+    Examples
+    --------
+    >>> from ansys.aedt.core import Circuit
+    >>> aedtapp = Circuit()
+    >>> c = aedtapp.modeler.schematic.create_capacitor()
+    >>> schematic_object = aedtapp.modeler.schematic
+
+    """
+
+    @pyaedt_function_handler()
+    def __getitem__(self, part_name: int | str) -> CircuitComponent | None:
+        """Retrieve a component object by name or schematic id.
+
+        Parameters
+        ----------
+        part_name : int or str
+           Part ID or part name.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modeler.circuits.object_3d_circuit.CircuitComponent`
+            Part object details.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> aedtapp = Circuit()
+        >>> c = aedtapp.modeler.schematic.create_capacitor()
+        >>> schematic_object = aedtapp.modeler.schematic
+        >>> capacitor1 = aedtapp.modeler.schematic[c.name]
+        >>> capacitor2 = aedtapp.modeler.schematic[c.schematic_id]
+
+        """
+        if isinstance(part_name, int):
+            return self.components[part_name]
+        for el in self.components:
+            if (
+                self.components[el].name == part_name
+                or self.components[el].composed_name == part_name
+                or el == part_name
+            ):
+                return self.components[el]
+
+        return None
+
+    def __init__(self, modeler) -> None:
+        """Circuit components class."""
+        self._app = modeler._app
+        self._modeler = modeler
+        self.logger = self._app.logger
+        self.omodel_manager = self._modeler.omodel_manager
+
+        self.oeditor = self._modeler.oeditor
+        self._currentId = 0
+        self.components = {}
+        self.refresh_all_ids()
+        self.current_position = [0, 0]
+        self.increment_mils = [1000, 1000]
+        self.limits_mils = 20000
+
+    @pyaedt_function_handler()
+    def get_wire_by_name(self, name: str) -> Wire | None:
+        """Wire class by name.
+
+        Parameters
+        ----------
+        name : str
+            Wire name.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modeler.circuits.object_3d_circuit.Wire`
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> aedtapp = Circuit()
+        >>> w1 = aedtapp.modeler.schematic.create_wire([[0, 0], [1, 1]])
+        >>> w2 = aedtapp.modeler.schematic.get_wire_by_name("net_1")
+
+        """
+        for _, w in self.wires.items():
+            if w.name == name:
+                return w
+            wname = w.name.split(";")[0].split("@")[0]
+            if name == wname:
+                return w
+        return None
+
+    @property
+    def wires(self) -> dict:
+        """All schematic wires in the design.
+
+        Returns
+        -------
+        dict
+            Wires.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> aedtapp = Circuit()
+        >>> w1 = aedtapp.modeler.schematic.create_wire([[0, 0], [1, 1]])
+        >>> wires = aedtapp.modeler.schematic.wires
+
+        """
+        wire_names = {}
+        for wire in self.oeditor.GetAllElements():
+            if "Wire" in wire:
+                w = Wire(self, composed_name=wire)
+                if ":" in wire.split(";")[1]:
+                    wire_id = int(wire.split(";")[1].split(":")[0])
+                else:
+                    wire_id = int(wire.split(";")[1])
+                name = wire.split(";")[0].split("@")[1]
+                w.id = wire_id
+                w.name = name
+                wire_names[wire_id] = w
+        return wire_names
+
+    @property
+    def o_definition_manager(self):
+        """AEDT oDefinitionManager.
+
+        References
+        ----------
+        >>> oDefinitionManager = oProject.GetDefinitionManager()
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> aedtapp = Circuit()
+        >>> o = aedtapp.modeler.schematic.o_definition_manager
+
+        """
+        return self._app.oproject.GetDefinitionManager()
+
+    @property
+    def ocomponent_manager(self):
+        """Component manager object.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> aedtapp = Circuit()
+        >>> o = aedtapp.modeler.schematic.ocomponent_manager
+
+        """
+        return self._app.ocomponent_manager
+
+    @property
+    def osymbol_manager(self):
+        """Model manager object.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> aedtapp = Circuit()
+        >>> o = aedtapp.modeler.schematic.osymbol_manager
+
+        """
+        return self._app.osymbol_manager
+
+    @property
+    def version(self) -> str:
+        """Version.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> aedtapp = Circuit()
+        >>> o = aedtapp.modeler.schematic.version
+
+        """
+        return self._app._aedt_version
+
+    @property
+    def model_units(self) -> str:
+        """Model units.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> aedtapp = Circuit()
+        >>> o = aedtapp.modeler.schematic.model_units
+
+        """
+        return self._app.units.length
+
+    @property
+    def schematic_units(self) -> str:
+        """Schematic units.
+
+        Options are ``"mm"``, ``"mil"``, ``"cm"`` and all other metric and imperial units.
+        The default is ``"meter"``.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> aedtapp = Circuit()
+        >>> o = aedtapp.modeler.schematic.model_units
+
+        """
+        return self._modeler.schematic_units
+
+    @schematic_units.setter
+    def schematic_units(self, value: str) -> None:
+        self._modeler.schematic_units = value
+
+    @property
+    def design_type(self) -> str:
+        """Design type.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> aedtapp = Circuit()
+        >>> o = aedtapp.modeler.schematic.design_type
+
+        """
+        return self._app.design_type
+
+    @property
+    def nets(self) -> list:
+        """List of all schematic nets.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> aedtapp = Circuit()
+        >>> n = aedtapp.modeler.schematic.nets
+
+        """
+        nets_comp = self.oeditor.GetAllNets()
+        nets = []
+        for net in nets_comp:
+            v = net.split(";")
+            if v[0].replace("Wire@", "") not in nets:
+                nets.append(v[0].replace("Wire@", ""))
+        return nets
+
+    @pyaedt_function_handler()
+    def _convert_point_to_meter(self, point: list) -> tuple:
+        """Convert numbers automatically to meters.
+
+        It is rounded to the nearest 100 mil which is minimum schematic snap unit.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> aedtapp = Circuit()
+        >>> x, y = aedtapp.modeler.schematic._convert_point_to_meter([1, 2])
+
+        """
+        xpos = point[0]
+        ypos = point[1]
+        if is_number(xpos):
+            xpos = Quantity(xpos, self.schematic_units)
+        elif xpos in self._app.variable_manager.variables:
+            xpos = Quantity(self._app[xpos])
+        else:
+            try:
+                xpos = Quantity(xpos)
+            except Exception:
+                raise ValueError("Units must be in length units")
+        if is_number(ypos):
+            ypos = Quantity(ypos, self.schematic_units)
+        elif ypos in self._app.variable_manager.variables:
+            ypos = Quantity(self._app[ypos])
+        else:
+            try:
+                ypos = Quantity(ypos)
+            except Exception:
+                raise ValueError("Units must be in length units")
+        if xpos.unit_system != "Length" or ypos.unit_system != "Length":
+            raise ValueError("Units must be in length units")
+        xpos = xpos.to("mil")
+        ypos = ypos.to("mil")
+        xpos.value = round(xpos.value, -2)
+        ypos.value = round(ypos.value, -2)
+        xpos = xpos.to("meter")
+        ypos = ypos.to("meter")
+        return xpos.value, ypos.value
+
+    @pyaedt_function_handler()
+    def _convert_point_to_units(self, point: list) -> list:
+        """Convert numbers automatically to AEDT units.
+
+        Numbers are automatically converted and rounded to 100mil.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> aedtapp = Circuit()
+        >>> x, y = aedtapp.modeler.schematic._convert_point_to_units([1, 2])
+
+        """
+        return [i / AEDT_UNITS["Length"][self.schematic_units] for i in self._convert_point_to_meter(point)]
+
+    @pyaedt_function_handler()
+    def _get_location(self, location=None, update_current_location: bool = True):
+        """Get current location.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> aedtapp = Circuit()
+        >>> x, y = aedtapp.modeler.schematic._get_location()
+
+        """
+        locale.setlocale(locale.LC_ALL, "en_US.UTF-8")
+        if not location:
+            xpos = self.current_position[0]
+            ypos = self.current_position[1]
+        else:
+            xpos, ypos = self._convert_point_to_meter(location)
+            if isinstance(xpos, (float, int)) and isinstance(ypos, (float, int)):
+                if update_current_location:
+                    self.current_position = [xpos, ypos]
+
+        if update_current_location:
+            self.current_position[1] += AEDT_UNITS["Length"]["mil"] * self.increment_mils[1]
+            if self.current_position[1] / AEDT_UNITS["Length"]["mil"] > self.limits_mils:
+                self.current_position[1] = 0
+                self.current_position[0] += AEDT_UNITS["Length"]["mil"] * self.increment_mils[0]
+        return xpos, ypos
+
+    @pyaedt_function_handler()
+    def create_unique_id(self) -> int:
+        """Create an unique ID.
+
+        Returns
+        -------
+        int
+            Unique ID in the range of ``[1, 65535]``.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> aedtapp = Circuit()
+        >>> x, y = aedtapp.modeler.schematic.create_unique_id()
+
+        """
+        element_ids = []
+        for el in self.oeditor.GetAllElements():
+            try:
+                element_ids.append(int(el.split("@")[1].split(";")[1].split(":")[0]))
+            except (IndexError, ValueError):
+                pass
+        secure_random = secrets.SystemRandom()
+        comp_id = secure_random.randint(1, 65535)
+        while comp_id in element_ids:
+            comp_id = secure_random.randint(1, 65535)
+        return comp_id
+
+    @pyaedt_function_handler()
+    def add_pin_iports(self, name: str, id_num: int) -> bool:
+        """Add ports on pins.
+
+        Parameters
+        ----------
+        name : str
+            Name of the component.
+        id_num : int
+            ID of circuit component.
+
+        Returns
+        -------
+        bool
+            ``True`` when successful, ``False`` when failed.
+
+        References
+        ----------
+        >>> oeditor.AddPinIPorts
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> aedtapp = Circuit()
+        >>> mycap = aedt_app.modeler.schematic.create_capacitor(value=1e-12)
+        >>> aedt_app.modeler.schematic.add_pin_iports(mycap.name, mycap.id)
+
+        """
+        comp_id = "CompInst@" + name + ";" + str(id_num) + ";395"
+        arg1 = ["Name:Selections", "Selections:=", [comp_id]]
+        self.oeditor.AddPinIPorts(arg1)
+        self.refresh_all_ids()
+        return True
+
+    @pyaedt_function_handler()
+    def create_interface_port(self, name: str, location: list = None, angle: int = 0, page: int = 1) -> Excitations:
+        """Create an interface port.
+
+        Parameters
+        ----------
+        name : str
+            Name of the port.
+        location : list, optional
+            Position on the X and Y axis. The default is ``None``.
+        angle : float, optional
+            Angle rotation in degrees. The default is ``0``.
+        page: int,  optional
+            Schematic page number. The default value is ``1``.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modules.boundary.icepak_boundary.Excitation`
+            Circuit Excitation Object.
+
+        References
+        ----------
+        >>> oEditor.CreateIPort
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> aedtapp = Circuit()
+        >>> p = aedtapp.modeler.schematic.create_interface_port("my_port")
+
+        """
+        if location is None:
+            location = []
+
+        if name in self._app.excitation_names:
+            self.logger.warning("Port name already assigned.")
+            return False
+
+        xpos, ypos = self._get_location(location, update_current_location=False)
+
+        arg1 = ["NAME:IPortProps", "Name:=", name]
+        arg2 = ["NAME:Attributes", "Page:=", page, "X:=", xpos, "Y:=", ypos, "Angle:=", angle, "Flip:=", False]
+        comp_name = self.oeditor.CreateIPort(arg1, arg2)
+
+        comp_id = int(comp_name.split(";")[-1])
+        self.add_id_to_component(comp_id, comp_name)
+
+        self._app._internal_excitations[name] = self.components[comp_id]
+
+        return self._app.design_excitations[name]
+
+    @pyaedt_function_handler()
+    def create_page_port(
+        self, name: str, location: list = None, angle: int = 0, label_position: str = "Auto", page: int = 1
+    ) -> CircuitComponent:
+        """Create a page port.
+
+        Parameters
+        ----------
+        name : str
+            Name of the port.
+        location : list, optional
+            Position on the X and Y axis.
+            If not provided the default is ``None``, in which case an empty list is set.
+        angle : int, optional
+            Angle rotation in degrees. The default is ``0``.
+        label_position : str, optional
+            Label position. The default is ``"auto"``.
+            Options are ''"Center"``, ``"Left"``, ``"Right"``, ``"Top"``, ``"Bottom"``.
+        page: int,  optional
+            Schematic page number. The default value is ``1``.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modeler.circuits.object_3d_circuit.CircuitComponent`
+            Circuit Component Object.
+
+        References
+        ----------
+        >>> oEditor.CreatePagePort
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> aedtapp = Circuit()
+        >>> p = aedtapp.modeler.schematic.create_page_port("my_port")
+
+        """
+        location = [] if location is None else location
+        xpos, ypos = self._get_location(location, update_current_location=False)
+
+        # id = self.create_unique_id()
+        comp_name = self.oeditor.CreatePagePort(
+            ["NAME:PagePortProps", "Name:=", name],
+            [
+                "NAME:Attributes",
+                "Page:=",
+                page,
+                "X:=",
+                xpos,
+                "Y:=",
+                ypos,
+                "Angle:=",
+                angle * math.pi / 180,
+                "Flip:=",
+                False,
+            ],
+        )
+
+        comp_id = int(comp_name.split(";")[-1])
+        # self.refresh_all_ids()
+        self.add_id_to_component(comp_id, comp_name)
+        if label_position == "Auto":
+            if angle == 270:
+                new_loc = "Top"
+            elif angle == 180:
+                new_loc = "Right"
+            elif angle == 90:
+                new_loc = "Bottom"
+            else:
+                new_loc = "Left"
+            self.oeditor.ChangeProperty(
+                [
+                    "NAME:AllTabs",
+                    [
+                        "NAME:PropDisplayPropTab",
+                        [
+                            "NAME:PropServers",
+                            self.components[comp_id].composed_name,
+                        ],
+                        [
+                            "NAME:ChangedProps",
+                            ["NAME:PortName", "Format:=", "Value", "Location:=", "Center", "NewLocation:=", new_loc],
+                        ],
+                    ],
+                ]
+            )
+        return self.components[comp_id]
+
+    @pyaedt_function_handler()
+    def create_gnd(self, location: list = None, angle: int = 0, page: int = 1) -> CircuitComponent | None:
+        """Create a ground.
+
+        Parameters
+        ----------
+        location : list, optional
+            Position on the X and Y axis. The default is ``None``.
+        angle : optional
+            Angle rotation in degrees. The default is ``0``.
+        page: int, optional
+            Schematics page number. The default value is ``1``.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modeler.circuits.object_3d_circuit.CircuitComponent`
+            Circuit Component Object.
+
+        References
+        ----------
+        >>> oEditor.CreateGround
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> aedtapp = Circuit()
+        >>> p = aedtapp.modeler.schematic.create_gnd()
+
+        """
+        if location is None:
+            location = []
+
+        xpos, ypos = self._get_location(location)
+        # id = self.create_unique_id()
+        angle = math.pi * angle / 180
+        name = self.oeditor.CreateGround(
+            ["NAME:GroundProps"],
+            ["NAME:Attributes", "Page:=", page, "X:=", xpos, "Y:=", ypos, "Angle:=", angle, "Flip:=", False],
+        )
+        comp_id = int(name.split(";")[-1])
+        self.add_id_to_component(comp_id, name)
+        # return id, self.components[id].composed_name
+        for el in self.components:
+            if name in self.components[el].composed_name:
+                return self.components[el]
+
+    @pyaedt_function_handler()
+    def create_model_from_touchstone(
+        self, input_file: str | Path, model_name: str = None, show_bitmap: bool = True, image_path: str = None
+    ) -> str | bool:
+        """Create a model from a touchstone file.
+
+        Parameters
+        ----------
+        input_file : str or :class:`pathlib.Path`
+            Full path to the Touchstone file.
+        model_name : str, optional
+            Name of the model. The default is ``None``.
+        show_bitmap : bool, optional
+            Show bitmap image of schematic component.
+            The default value is ``True``.
+        image_path : str, optional
+            Path to the image. The default is ``None``.
+
+        Returns
+        -------
+        str
+            Model name when successfully created. ``False`` if something went wrong.
+
+        References
+        ----------
+        oModelManager.Add
+        oComponentManager.Add
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> aedtapp = Circuit()
+        >>> new_model = aedtapp.modeler.schematic.create_model_from_nexxim_state_space("my_file.s4p")
+
+        """
+        if not model_name:
+            model_name = Path(Path(input_file).name).stem
+            if "." in model_name:
+                model_name = model_name.replace(".", "_")
+        if model_name in list(self.omodel_manager.GetNames()):
+            model_name = generate_unique_name(model_name, n=2)
+
+        num_terminal = 0
+        suffix = Path(input_file).suffix.lower()  # ".sxp", ".ts"
+        match = re.fullmatch(r"\.s(\d+)p", suffix)
+        if match:
+            num_terminal = int(match.group(1))
+        else:
+            # Touchstone 2.0 (.ts), read the [Number of Ports] keyword.
+            # Expected format: "[Number of Ports] N"
+            keyword_re = re.compile(r"^\[number of ports\]\s+(\d+)\s*$", re.IGNORECASE)
+            with open_file(input_file, "r") as f:
+                for line in f:
+                    stripped = line.strip()
+                    keyword_match = keyword_re.match(stripped)
+                    if keyword_match:
+                        num_terminal = int(keyword_match.group(1))
+                        break
+
+        port_names = []
+        with open_file(input_file, "r") as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith(("!", "#", "")):
+                    if "Port" in line and "=" in line and "Impedance" not in line:
+                        port_names.append(line.split("=")[-1].strip().replace(" ", "_"))
+                else:
+                    break
+        if not num_terminal and port_names:
+            num_terminal = len(port_names)
+        elif not num_terminal and not port_names:
+            raise Exception("Not able to identify number of ports.")
+        image_subcircuit_path = ""
+        bmp_file_name = ""
+        if show_bitmap:
+            if not image_path:
+                image_subcircuit_path = Path(self._app.desktop_install_dir) / "syslib" / "Bitmaps" / "nport.bmp"
+            else:
+                image_subcircuit_path = Path(image_path)
+
+            bmp_file_name = Path(self._app.desktop_install_dir) / "syslib" / "Bitmaps" / "nport.bmp"
+            bmp_file_name = bmp_file_name.name
+
+        if not port_names:
+            port_names = [str(i + 1) for i in range(num_terminal)]
+        arg = [
+            "NAME:" + model_name,
+            "Name:=",
+            model_name,
+            "ModTime:=",
+            0,
+            "Library:=",
+            "",
+            "LibLocation:=",
+            "Project",
+            "ModelType:=",
+            "nport",
+            "Description:=",
+            "",
+            "ImageFile:=",
+            str(image_subcircuit_path),
+            "SymbolPinConfiguration:=",
+            0,
+            ["NAME:PortInfoBlk"],
+            ["NAME:PortOrderBlk"],
+            "filename:=",
+            str(input_file),
+            "numberofports:=",
+            num_terminal,
+            "sssfilename:=",
+            "",
+            "sssmodel:=",
+            False,
+            "PortNames:=",
+            port_names,
+            "domain:=",
+            "frequency",
+            "datamode:=",
+            "Link",
+            "devicename:=",
+            "",
+            "SolutionName:=",
+            "",
+            "displayformat:=",
+            "MagnitudePhase",
+            "datatype:=",
+            "SMatrix",
+            [
+                "NAME:DesignerCustomization",
+                "DCOption:=",
+                0,
+                "InterpOption:=",
+                0,
+                "ExtrapOption:=",
+                1,
+                "Convolution:=",
+                0,
+                "Passivity:=",
+                0,
+                "Reciprocal:=",
+                False,
+                "ModelOption:=",
+                "",
+                "DataType:=",
+                1,
+            ],
+            [
+                "NAME:NexximCustomization",
+                "DCOption:=",
+                3,
+                "InterpOption:=",
+                1,
+                "ExtrapOption:=",
+                3,
+                "Convolution:=",
+                0,
+                "Passivity:=",
+                0,
+                "Reciprocal:=",
+                False,
+                "ModelOption:=",
+                "",
+                "DataType:=",
+                2,
+            ],
+            [
+                "NAME:HSpiceCustomization",
+                "DCOption:=",
+                1,
+                "InterpOption:=",
+                2,
+                "ExtrapOption:=",
+                3,
+                "Convolution:=",
+                0,
+                "Passivity:=",
+                0,
+                "Reciprocal:=",
+                False,
+                "ModelOption:=",
+                "",
+                "DataType:=",
+                3,
+            ],
+            "NoiseModelOption:=",
+            "External",
+        ]
+        self.omodel_manager.Add(arg)
+        arg = [
+            "NAME:" + model_name,
+            "Info:=",
+            [
+                "Type:=",
+                10,
+                "NumTerminals:=",
+                num_terminal,
+                "DataSource:=",
+                "",
+                "ModifiedOn:=",
+                1618569625,
+                "Manufacturer:=",
+                "",
+                "Symbol:=",
+                "",
+                "ModelNames:=",
+                "",
+                "Footprint:=",
+                "",
+                "Description:=",
+                "",
+                "InfoTopic:=",
+                "",
+                "InfoHelpFile:=",
+                "",
+                "IconFile:=",
+                str(bmp_file_name),
+                "Library:=",
+                "",
+                "OriginalLocation:=",
+                "Project",
+                "IEEE:=",
+                "",
+                "Author:=",
+                "",
+                "OriginalAuthor:=",
+                "",
+                "CreationDate:=",
+                1618569625,
+                "ExampleFile:=",
+                "",
+                "HiddenComponent:=",
+                0,
+                "CircuitEnv:=",
+                0,
+                "GroupID:=",
+                0,
+            ],
+            "CircuitEnv:=",
+            0,
+            "Refbase:=",
+            "S",
+            "NumParts:=",
+            1,
+            "ModSinceLib:=",
+            False,
+        ]
+        for i in range(num_terminal):
+            arg.append("Terminal:=")
+            arg.append([port_names[i], port_names[i], "A", False, i, 1, "", "Electrical", "0"])
+        arg.append("CompExtID:=")
+        arg.append(5)
+        arg.append(
+            [
+                "NAME:Parameters",
+                "MenuProp:=",
+                ["CoSimulator", "SD", "", "Default", 0],
+                "ButtonProp:=",
+                ["CosimDefinition", "SD", "", "Edit", "Edit", 40501, "ButtonPropClientData:=", []],
+            ]
+        )
+        arg.append(
+            [
+                "NAME:CosimDefinitions",
+                [
+                    "NAME:CosimDefinition",
+                    "CosimulatorType:=",
+                    102,
+                    "CosimDefName:=",
+                    "Default",
+                    "IsDefinition:=",
+                    True,
+                    "Connect:=",
+                    True,
+                    "ModelDefinitionName:=",
+                    model_name,
+                    "ShowRefPin2:=",
+                    2,
+                    "LenPropName:=",
+                    "",
+                ],
+                "DefaultCosim:=",
+                "Default",
+            ]
+        )
+
+        self.ocomponent_manager.Add(arg)
+        return model_name
+
+    @pyaedt_function_handler()
+    def create_model_from_nexxim_state_space(
+        self, input_file: str, num_terminal: int = 0, model_name: str = None, port_names: list = None
+    ) -> str | bool:
+        """Create a model from a Touchstone file.
+
+        Parameters
+        ----------
+        input_file : str
+            Full path to the Touchstone file.
+        num_terminal : int, optional
+            Number of terminals in the .sss file.
+            Default value is ``0`` which will automatically parse the file header.
+        model_name : str, optional
+            Name of the model. The default is ``None``.
+        show_bitmap : bool, optional
+            Show bitmap image of schematic component.
+            The default value is ``True``.
+        port_names : list, optional
+            List of port names. The default is ``None``.
+
+        Returns
+        -------
+        str
+            Model name when successfully created. ``False`` if something went wrong.
+
+        References
+        ----------
+        >>> oModelManager.Add
+        >>> oComponentManager.Add
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> aedtapp = Circuit()
+        >>> schematic = aedtapp.modeler.schematic
+        >>> new_model = schematic.create_model_from_nexxim_state_space(input_file="example.txt", num_terminal=1)
+
+        """
+        if not model_name:
+            model_name = Path(Path(input_file).name).stem
+            if "." in model_name:
+                model_name = model_name.replace(".", "_")
+        if model_name in list(self.omodel_manager.GetNames()):
+            model_name = generate_unique_name(model_name, n=2)
+        if not port_names or num_terminal == 0:
+            from ansys.aedt.core.modeler.circuits.state_space import UnsupportedVersionError
+            from ansys.aedt.core.modeler.circuits.state_space import read_pin_names
+
+            try:
+                port_names = read_pin_names(input_file)
+                num_terminal = len(port_names)
+            except UnsupportedVersionError:
+                if num_terminal:  # pragma: no cover
+                    port_names = [str(i + 1) for i in range(num_terminal)]
+                else:  # pragma: no cover
+                    raise ValueError("sss format unsupported. Port names and number of terminal has to be provided.")
+        arg = [
+            "NAME:" + model_name,
+            "Name:=",
+            model_name,
+            "ModTime:=",
+            0,
+            "Library:=",
+            "",
+            "LibLocation:=",
+            "Project",
+            "ModelType:=",
+            "nport_sss",
+            "Description:=",
+            "",
+            "ImageFile:=",
+            "",
+            "SymbolPinConfiguration:=",
+            0,
+            ["NAME:PortInfoBlk"],
+            ["NAME:PortOrderBlk"],
+            "filename:=",
+            "",
+            "numberofports:=",
+            num_terminal,
+            "sssfilename:=",
+            input_file,
+            "sssmodel:=",
+            True,
+            "PortNames:=",
+            port_names,
+            "domain:=",
+            "frequency",
+            "datamode:=",
+            "Link",
+            "devicename:=",
+            "",
+            "SolutionName:=",
+            "",
+            "displayformat:=",
+            "MagnitudePhase",
+            "datatype:=",
+            "SMatrix",
+            [
+                "NAME:DesignerCustomization",
+                "DCOption:=",
+                0,
+                "InterpOption:=",
+                0,
+                "ExtrapOption:=",
+                1,
+                "Convolution:=",
+                0,
+                "Passivity:=",
+                0,
+                "Reciprocal:=",
+                False,
+                "ModelOption:=",
+                "",
+                "DataType:=",
+                1,
+            ],
+            [
+                "NAME:NexximCustomization",
+                "DCOption:=",
+                3,
+                "InterpOption:=",
+                1,
+                "ExtrapOption:=",
+                3,
+                "Convolution:=",
+                0,
+                "Passivity:=",
+                0,
+                "Reciprocal:=",
+                False,
+                "ModelOption:=",
+                "",
+                "DataType:=",
+                2,
+            ],
+            [
+                "NAME:HSpiceCustomization",
+                "DCOption:=",
+                1,
+                "InterpOption:=",
+                2,
+                "ExtrapOption:=",
+                3,
+                "Convolution:=",
+                0,
+                "Passivity:=",
+                0,
+                "Reciprocal:=",
+                False,
+                "ModelOption:=",
+                "",
+                "DataType:=",
+                3,
+            ],
+            "NoiseModelOption:=",
+            "External",
+        ]
+        self.omodel_manager.Add(arg)
+        arg = [
+            "NAME:" + model_name,
+            "Info:=",
+            [
+                "Type:=",
+                10,
+                "NumTerminals:=",
+                num_terminal,
+                "DataSource:=",
+                "",
+                "ModifiedOn:=",
+                1618569625,
+                "Manufacturer:=",
+                "",
+                "Symbol:=",
+                "",
+                "ModelNames:=",
+                "",
+                "Footprint:=",
+                "",
+                "Description:=",
+                "",
+                "InfoTopic:=",
+                "",
+                "InfoHelpFile:=",
+                "",
+                "IconFile:=",
+                "",
+                "Library:=",
+                "",
+                "OriginalLocation:=",
+                "Project",
+                "IEEE:=",
+                "",
+                "Author:=",
+                "",
+                "OriginalAuthor:=",
+                "",
+                "CreationDate:=",
+                1618569625,
+                "ExampleFile:=",
+                "",
+                "HiddenComponent:=",
+                0,
+                "CircuitEnv:=",
+                0,
+                "GroupID:=",
+                0,
+            ],
+            "CircuitEnv:=",
+            0,
+            "Refbase:=",
+            "S",
+            "NumParts:=",
+            1,
+            "ModSinceLib:=",
+            False,
+        ]
+        for i in range(num_terminal):
+            arg.append("Terminal:=")
+            arg.append([port_names[i], port_names[i], "A", False, i, 1, "", "Electrical", "0"])
+        arg.append("CompExtID:=")
+        arg.append(5)
+        arg.append(
+            [
+                "NAME:Parameters",
+                "MenuProp:=",
+                ["CoSimulator", "SD", "", "Default", 0],
+                "ButtonProp:=",
+                ["CosimDefinition", "SD", "", "Edit", "Edit", 40501, "ButtonPropClientData:=", []],
+            ]
+        )
+        arg.append(
+            [
+                "NAME:CosimDefinitions",
+                [
+                    "NAME:CosimDefinition",
+                    "CosimulatorType:=",
+                    110,
+                    "CosimDefName:=",
+                    "Default",
+                    "IsDefinition:=",
+                    True,
+                    "Connect:=",
+                    True,
+                    "ModelDefinitionName:=",
+                    model_name,
+                    "ShowRefPin2:=",
+                    2,
+                    "LenPropName:=",
+                    "",
+                ],
+                "DefaultCosim:=",
+                "Default",
+            ]
+        )
+
+        self.ocomponent_manager.Add(arg)
+        return model_name
+
+    @pyaedt_function_handler()
+    def create_touchstone_component(
+        self,
+        model_name: str,
+        location: list[float] = None,
+        angle: int = 0,
+        show_bitmap: bool = True,
+        page: int = 1,
+        image_path: str = None,
+    ) -> CircuitComponent:
+        """Create a component from a touchstone model.
+
+        Parameters
+        ----------
+        model_name : str
+            Name of the Touchstone model or full path to touchstone file.
+            If full touchstone is provided and model name doesn't exist in AEDT a new model will be created.
+        location : list of float, optional
+            Position on the X  and Y axis.
+        angle : float, optional
+            Angle rotation in degrees. The default is ``0``.
+        show_bitmap : bool, optional
+            Show bitmap image of schematic component.
+            The default value is ``True``.
+        page: int,  optional
+            Schematic page number. The default value is ``1``.
+        image_path : str, optional
+            Path to the image. The default is ``None``.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modeler.circuits.object_3d_circuit.CircuitComponent`
+            Circuit Component Object.
+
+        References
+        ----------
+        >>> oModelManager.Add
+        >>> oComponentManager.Add
+        >>> oEditor.CreateComponent
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> from pathlib import Path
+        >>> cir = Circuit()
+        >>> sch = cir.modeler.schematic
+        >>> s_parameter_path = str(Path("your_path") / "s_param_file_name.s4p")
+        >>> circuit_comp = sch.create_touchstone_component(s_parameter_path, location=[0.0, 0.0], show_bitmap=False)
+
+        """
+        if not Path(model_name):
+            raise FileNotFoundError("File not found.")
+        m_name = ""
+        if Path(model_name).is_file():
+            m_name = Path(Path(model_name).name).stem
+            if "." in m_name:
+                m_name = str(model_name).replace(".", "_")
+            if m_name not in list(self.omodel_manager.GetNames()):
+                m_name = ""
+            else:
+                self.logger.info(f"Model {m_name} already exists. Using it for new component.")
+        model_name = (
+            m_name
+            if m_name
+            else self.create_model_from_touchstone(str(model_name), show_bitmap=show_bitmap, image_path=image_path)
+        )
+        if location is None:
+            location = []
+        xpos, ypos = self._get_location(location)
+        arg1 = ["NAME:ComponentProps", "Name:=", model_name]
+        arg2 = ["NAME:Attributes", "Page:=", page, "X:=", xpos, "Y:=", ypos, "Angle:=", angle, "Flip:=", False]
+        comp_name = self.oeditor.CreateComponent(arg1, arg2)
+        comp_id = int(comp_name.split(";")[-1])
+        self.add_id_to_component(comp_id, comp_name)
+        return self.components[comp_id]
+
+    @pyaedt_function_handler()
+    def create_nexxim_state_space_component(
+        self,
+        model_name: str,
+        num_terminal: int = 0,
+        location: list[float] = None,
+        angle: int = 0,
+        port_names: list[str] = None,
+        page: int = 1,
+    ) -> CircuitComponent:
+        """Create a component from a touchstone model.
+
+        Parameters
+        ----------
+        model_name : str or Path
+            Name of the Touchstone model or full path to the Touchstone file.
+            If a full Touchstone path is provided, a new model is created.
+        num_terminal : int, optional
+            Number of terminals in the ``.sss`` file.
+            Default value is ``0`` which will automatically parse the file header.
+        location : list of float, optional
+            Position on the X and Y axes.
+        angle : float, optional
+            Angle rotation in degrees. The default is ``0``.
+        port_names : list, optional
+            Port names.
+        page : int, optional
+            Schematic page number. The default value is ``1``.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modeler.circuits.object_3d_circuit.CircuitComponent`
+            Circuit component object.
+
+        References
+        ----------
+        oModelManager.Add
+        oComponentManager.Add
+        oEditor.CreateComponent
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> aedtapp = Circuit()
+        >>> sch = aedtapp.modeler.schematic
+        >>> s_parameter_path = str(Path("your_path") / "s_param_file_name.s4p")
+        >>> model = sch.create_nexxim_state_space_component(s_parameter_path, 4)
+
+        """
+        if not Path(model_name):
+            raise FileNotFoundError("File not found.")
+        model_name = self.create_model_from_nexxim_state_space(str(model_name), num_terminal, port_names=port_names)
+        if location is None:
+            location = []
+        xpos, ypos = self._get_location(location)
+        # id = self.create_unique_id()
+        arg1 = ["NAME:ComponentProps", "Name:=", str(model_name)]
+        arg2 = ["NAME:Attributes", "Page:=", page, "X:=", xpos, "Y:=", ypos, "Angle:=", angle, "Flip:=", False]
+        comp_name = self.oeditor.CreateComponent(arg1, arg2)
+        comp_id = int(comp_name.split(";")[-1])
+        self.add_id_to_component(comp_id, comp_name)
+        return self.components[comp_id]
+
+    @pyaedt_function_handler()
+    def create_component(
+        self,
+        name: str | None = None,
+        component_library: str | None = "Resistors",
+        component_name: str = "RES_",
+        location: list[float] | None = None,
+        angle: int | float = 0,
+        use_instance_id_netlist: bool = False,
+        global_netlist_list: list | None = None,
+        page: int = 1,
+        flip: bool = False,
+    ) -> CircuitComponent:
+        """Create a component from a library.
+
+        Parameters
+        ----------
+        name : str, optional
+            Name of the instance. The default is ``None.``
+        component_library : str, optional
+            Name of the component library. The default is ``""``.
+        component_name : str, optional
+            Name of component in the library. The default is ``"RES"``.
+        location : list of float, optional
+            Position on the X axis and Y axis.
+            The default is ``None``, in which case the component is placed in [0, 0].
+        angle : int or float, optional
+            Angle rotation in degrees. The default is ``0``.
+        use_instance_id_netlist : bool, optional
+            Whether to enable the instance ID in the net list.
+            The default is ``False``.
+        global_netlist_list : list, optional
+            The default is ``None``, in which case an empty list is passed.
+        page: int,  optional
+            Schematic page number. The default value is ``1``.
+        flip : bool, optional
+            Flip the component. The default is ``False``.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modeler.circuits.object_3d_circuit.CircuitComponent`
+            Circuit Component Object.
+
+        References
+        ----------
+        >>> oEditor.CreateComponent
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import TwinBuilder
+        >>> aedtapp = TwinBuilder()
+        >>> cmp = aedtapp.modeler.schematic.create_component(component_library="", component_name="ExcitationComponent")
+        >>> cmp.set_property("ShowPin", True)
+
+        """
+        # id = self.create_unique_id()
+        if component_library:
+            inst_name = self.design_libray + "\\" + component_library + ":" + component_name
+        else:
+            inst_name = component_name
+        arg1 = ["NAME:ComponentProps", "Name:=", inst_name]
+        xpos, ypos = self._get_location(location)
+        angle = math.pi * angle / 180
+        arg2 = ["NAME:Attributes", "Page:=", page, "X:=", xpos, "Y:=", ypos, "Angle:=", angle, "Flip:=", flip]
+        comp_name = self.oeditor.CreateComponent(arg1, arg2)
+        comp_id = int(comp_name.split(";")[-1])
+        # self.refresh_all_ids()
+        self.add_id_to_component(comp_id, comp_name)
+        if name:
+            self.components[comp_id].set_property("InstanceName", name)
+        if use_instance_id_netlist:
+            self.enable_use_instance_name(component_library, component_name)
+        elif global_netlist_list:
+            self.enable_global_netlist(component_name, global_netlist_list)
+        return self.components[comp_id]
+
+    @pyaedt_function_handler()
+    def disable_data_netlist(self, assignment: str) -> bool:
+        """Disable the Nexxim global net list.
+
+        Parameters
+        ----------
+        assignment : str
+            Name of the component.
+
+        Returns
+        -------
+        bool
+            ``True`` when successful, ``False`` when failed.
+
+        References
+        ----------
+        >>> oComponentManager.GetData
+        >>> oComponentManager.Edit
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> aedtapp = Circuit()
+        >>> sch = aedtapp.modeler.schematic
+        >>> sch.disable_data_netlist(assignment="Box1")
+
+        """
+        name = assignment
+
+        properties = self.ocomponent_manager.GetData(name)
+        if len(properties) > 0:
+            nexxim = list(properties[len(properties) - 1][1])
+            for el in nexxim:
+                if el == "Data:=":
+                    nexxim_data = list(nexxim[nexxim.index(el) + 1])
+                    nexxim_data[1] = ""
+                    nexxim[nexxim.index(el) + 1] = nexxim_data
+        self.ocomponent_manager.Edit(
+            name, ["Name:" + assignment, ["NAME:CosimDefinitions", nexxim, "DefaultCosim:=", "DefaultNetlist"]]
+        )
+        return True
+
+    @pyaedt_function_handler()
+    def enable_global_netlist(self, assignment: str, global_netlist_list: list = None) -> bool:
+        """Enable Nexxim global net list.
+
+        Parameters
+        ----------
+        assignment : str
+            Name of the component.
+        global_netlist_list : list
+            A list of lines to include. The default is ``None``.
+
+        Returns
+        -------
+        bool
+            ``True`` when successful, ``False`` when failed.
+
+        References
+        ----------
+        >>> oComponentManager.GetData
+        >>> oComponentManager.Edit
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> aedtapp = Circuit()
+        >>> sch = aedtapp.modeler.schematic
+        >>> sch.enable_global_netlist(assignment="Box1")
+
+        """
+        if global_netlist_list is None:
+            global_netlist_list = []
+
+        name = assignment
+
+        properties = self.ocomponent_manager.GetData(name)
+        if len(properties) > 0:
+            nexxim = list(properties[len(properties) - 1][1])
+            for el in nexxim:
+                if el == "GRef:=":
+                    nexxim_data = list(nexxim[nexxim.index(el) + 1])
+                    nexxim_data[1] = "\n".join(global_netlist_list).replace("\\", "/")
+                    nexxim[nexxim.index(el) + 1] = nexxim_data
+        self.ocomponent_manager.Edit(
+            name,
+            ["Name:" + assignment, ["NAME:CosimDefinitions", nexxim, "DefaultCosim:=", "DefaultNetlist"]],
+        )
+        return True
+
+    @pyaedt_function_handler()
+    def create_symbol(self, name: str, pins: list) -> bool:
+        """Create a symbol.
+
+        Parameters
+        ----------
+        name : str
+            Name of the symbol.
+        pins : list
+            List of the pins.
+
+        Returns
+        -------
+        bool
+            ``True`` when successful, ``False`` when failed.
+
+        References
+        ----------
+        >>> oSymbolManager.Add
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> aedtapp = Circuit()
+        >>> sch = aedtapp.modeler.schematic
+        >>> sch.create_symbol("my_symbol", [1, 2])
+
+        """
+        numpins = len(pins)
+        h = int(numpins / 2)
+        x1 = 0
+        y2 = 0
+        x2 = 0.00508
+        y1 = 0.00254 * (h + 3)
+        xp = -0.00254
+        yp = 0.00254 * (h + 2)
+        angle = 0
+        arg = [
+            "NAME:" + name,
+            "ModTime:=",
+            1591858230,
+            "Library:=",
+            "",
+            "ModSinceLib:=",
+            False,
+            "LibLocation:=",
+            "Project",
+            "HighestLevel:=",
+            1,
+            "Normalize:=",
+            True,
+            "InitialLevels:=",
+            [0, 1],
+            ["NAME:Graphics"],
+        ]
+        self.osymbol_manager.Add(arg)
+
+        comp_id = 2
+        i = 1
+        comp_id += 2
+        r = numpins - (h * 2)
+        for pin in pins:
+            arg.append(
+                [
+                    "NAME:PinDef",
+                    "Pin:=",
+                    [pin, xp, yp, angle, "N", 0, 0.00254, False, 0, True, "", False, False, pin, True],
+                ]
+            )
+            if i == (h + r):
+                yp = 0.00254 * (h + 2)
+                xp = 0.00762
+                angle = math.pi
+            else:
+                yp -= 0.00254
+            comp_id += 2
+            i += 1
+
+        arg.append(
+            [
+                "NAME:Graphics",
+                ["NAME:1", "Rect:=", [0, 0, 0, 0, (x1 + x2) / 2, (y1 + y2) / 2, x2 - x1, y1 - y2, 0, 0, 8192]],
+            ]
+        )
+        self.osymbol_manager.EditWithComps(name, arg, [])
+        return True
+
+    @pyaedt_function_handler()
+    def enable_use_instance_name(self, component_library: str = "", component_name: str = "RES_") -> bool:
+        """Enable the use of the instance name.
+
+        Parameters
+        ----------
+        component_library : str, optional
+             Name of the component library. The default is ``""``.
+        component_name : str, optional
+             Name of the component. The default is ``"RES_"``.
+
+        Returns
+        -------
+        bool
+            ``True`` when successful, ``False`` when failed.
+
+        References
+        ----------
+        >>> oComponentManager.GetData
+        >>> oComponentManager.Edit
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> aedtapp = Circuit()
+        >>> sch = aedtapp.modeler.schematic
+        >>> sch.enable_use_instance_name()
+
+        """
+        if component_library:
+            name = self.design_libray + "\\" + component_library + ":" + component_name
+        else:
+            name = component_name
+
+        properties = self.ocomponent_manager.GetData(name)
+        if len(properties) > 0:
+            nexxim = list(properties[len(properties) - 1][1])
+            for el in nexxim:
+                if el == "Data:=":
+                    nexxim_data = list(nexxim[nexxim.index(el) + 1])
+                    netlist = nexxim_data[1]
+                    if "@InstanceName" not in netlist[:15]:
+                        newnetlist = "@InstanceName" + netlist[4:]
+                        nexxim_data[1] = newnetlist
+                    nexxim[nexxim.index(el) + 1] = nexxim_data
+                elif el == "GRef:=":
+                    nexxim_data = list(nexxim[nexxim.index(el) + 1])
+                    nexxim[nexxim.index(el) + 1] = nexxim_data
+        self.ocomponent_manager.Edit(
+            name,
+            ["Name:" + component_name, ["NAME:CosimDefinitions", nexxim, "DefaultCosim:=", "DefaultNetlist"]],
+        )
+        return True
+
+    @pyaedt_function_handler()
+    def refresh_all_ids(self) -> int:
+        """Refresh all IDs and return the number of components.
+
+        References
+        ----------
+        >>> oEditor.GetAllElements()
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> aedtapp = Circuit()
+        >>> sch = aedtapp.modeler.schematic
+        >>> sch.refresh_all_ids()
+
+        """
+        obj = self.oeditor.GetAllElements()
+        if not obj:
+            obj = []
+        obj = [i for i in obj if "Wire" not in i[:4]]
+        for el in obj:
+            if not self.get_obj_id(el):
+                name = el.split(";")
+                if len(name) > 1:
+                    if name[0].startswith("IPort"):
+                        port_name = name[0].replace("IPort@", "")
+                        o = Excitations(self, name=port_name)
+                    else:
+                        o = CircuitComponent(self, tabname=self.tab_name)
+                        o.name = name[0]
+
+                    if len(name) == 2:
+                        o.schematic_id = int(name[1].split(":")[0])
+                        objID = int(o.schematic_id)
+                    else:
+                        o.id = int(name[1]) if is_number(name[1]) else name[1]
+                        o.schematic_id = name[2]
+                        objID = int(o.schematic_id)
+
+                    self.components[objID] = o
+        return len(self.components)
+
+    @pyaedt_function_handler()
+    def add_id_to_component(self, component_id: int, name: str = None) -> int:
+        """Add an ID to a component.
+
+        Parameters
+        ----------
+        component_id : int
+            ID to assign to the component.
+        name : str, optional
+            Component name. The default is ``None``.
+
+        Returns
+        -------
+        int
+            Number of components.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> aedtapp = Circuit()
+        >>> sch = aedtapp.modeler.schematic
+        >>> sch.add_id_to_component(1)
+
+        """
+        if name:
+            name = name.split(";")
+            if len(name) > 1 and str(component_id) == name[-1]:
+                if name[0].startswith("IPort"):
+                    port_name = name[0].replace("IPort@", "")
+                    o = Excitations(self, name=port_name)
+                    o.is_port = True
+                else:
+                    o = CircuitComponent(self, tabname=self.tab_name)
+                    o.name = name[0]
+                if len(name) > 2:
+                    o.id = int(name[1])
+                    o.schematic_id = int(name[2])
+                    objID = o.schematic_id
+                else:
+                    o.schematic_id = int(name[1].split(":")[0])
+                    objID = o.schematic_id
+
+                self.components[objID] = o
+            return len(self.components)
+        obj = self.oeditor.GetAllElements()
+        for el in obj:
+            name = el.split(";")
+            if len(name) > 1 and str(component_id) == name[-1]:
+                if name[0].startswith("IPort"):
+                    port_name = name[0].replace("IPort@", "")
+                    o = Excitations(self, name=port_name)
+                    o.is_port = True
+                else:
+                    o = CircuitComponent(self, tabname=self.tab_name)
+                    o.name = name[0]
+                if len(name) > 2:
+                    o.id = int(name[1])
+                    o.schematic_id = int(name[2])
+                    objID = o.schematic_id
+                else:
+                    o.schematic_id = int(name[1].split(":")[0])
+                    objID = o.schematic_id
+
+                self.components[objID] = o
+
+        return len(self.components)
+
+    @pyaedt_function_handler()
+    def get_obj_id(self, assignment: str) -> int | None:
+        """Retrieve the ID of an object.
+
+        Parameters
+        ----------
+        assignment : str
+            Name of the object.
+
+        Returns
+        -------
+        bool
+            ``True`` when successful, ``False`` when failed.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> aedtapp = Circuit()
+        >>> sch = aedtapp.modeler.schematic
+        >>> c = sch.create_capacitor(value=1e-12)
+        >>> c_id = sch.get_obj_id(c.name)
+
+        """
+        for el in self.components:
+            if self.components[el].name == assignment:
+                return el
+        return None
+
+    @pyaedt_function_handler()
+    def get_pins(self, assignment: int | str) -> list:
+        """Retrieve one or more pins.
+
+        Parameters
+        ----------
+        assignment : int or str
+            One or more IDs or names for the pins to retrieve.
+
+        Returns
+        -------
+        type
+            Pin with properties.
+
+        References
+        ----------
+        >>> oEditor.GetComponentPins
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> aedtapp = Circuit()
+        >>> sch = aedtapp.modeler.schematic
+        >>> c = sch.create_capacitor(value=1e-12)
+        >>> c_pins = sch.get_pins(c.name)
+
+        """
+        if isinstance(assignment, CircuitComponent):
+            pins = self.oeditor.GetComponentPins(assignment.composed_name)
+        elif isinstance(assignment, str):
+            pins = self.oeditor.GetComponentPins(assignment)
+            # pins = self.oeditor.GetComponentPins(partid)
+        else:
+            pins = self.oeditor.GetComponentPins(self.components[assignment].composed_name)
+            # pins = self.oeditor.GetComponentPins(self.components[partid].composed_name)
+        return list(pins)
+
+    @pyaedt_function_handler()
+    def get_pin_location(self, assignment: int, pin: str) -> list:
+        """Retrieve the location of a pin.
+
+        Parameters
+        ----------
+        assignment : int
+            ID of the part.
+        pin :
+            Name of the pin.
+
+        Returns
+        -------
+        List
+            List of axis values ``[x, y]``.
+
+        References
+        ----------
+        >>> oEditor.GetComponentPinLocation
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> aedtapp = Circuit()
+        >>> sch = aedtapp.modeler.schematic
+        >>> components = aedtapp.modeler.schematic.components
+        >>> c = components[1]
+        >>> c_location = sch.get_pin_location(c.id, c.name)
+
+        """
+        if isinstance(assignment, str):
+            x = self.oeditor.GetComponentPinLocation(assignment, pin, True)
+            y = self.oeditor.GetComponentPinLocation(assignment, pin, False)
+        else:
+            x = self.oeditor.GetComponentPinLocation(self.components[assignment].composed_name, pin, True)
+            y = self.oeditor.GetComponentPinLocation(self.components[assignment].composed_name, pin, False)
+        return self._convert_point_to_units([x, y])
+
+    @pyaedt_function_handler()
+    def create_line(self, points: list, color: int = 0, width: int = 0, page: int = 1) -> None:
+        """Draw a graphical line.
+
+        Parameters
+        ----------
+        points : list
+            A nested list of point coordinates. For example,
+            ``[[x1, y1], [x2, y2], ...]``.
+        color : string or 3 item list, optional
+            Color or the line. The default is ``"0"``.
+        width : float, optional
+            Width of the line. The default is ``0``.
+        page: int, optional
+            Schematic page number. The default value is ``1``.
+
+        Returns
+        -------
+        >>> oEditor.CreateLine
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> aedtapp = Circuit()
+        >>> sch = aedtapp.modeler.schematic
+        >>> sch.create_line([[0,0], [1, 1])
+
+        """
+        points = [str(tuple(self._convert_point_to_meter(i))) for i in points]
+        # id = self.create_unique_id()
+        return self.oeditor.CreateLine(
+            ["NAME:LineData", "Points:=", points, "LineWidth:=", width, "Color:=", color],
+            ["NAME:Attributes", "Page:=", page],
+        )
+
+    @pyaedt_function_handler()
+    def create_wire(self, points: list, name: str = "", page: int = 1) -> Wire | bool:
+        """Create a wire.
+
+        Parameters
+        ----------
+        points : list
+            A nested list of point coordinates. For example,
+            ``[[x1, y1], [x2, y2], ...]``.
+        name : str, optional
+            Name of the wire. Default value is ``""``.
+        page: int, optional
+            Schematics page number. The default value is ``1``.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modeler.cad.object_3dcircuit.Wire`
+            Wire Object.
+
+        References
+        ----------
+        >>> oEditor.CreateWire
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> aedtapp = Circuit()
+        >>> sch = aedtapp.modeler.schematic
+        >>> sch.create_wire([[0,0], [1, 1])
+
+        """
+        points = [str(tuple(self._convert_point_to_meter(i))) for i in points]
+        # wire_id = self.create_unique_id()
+        arg1 = ["NAME:WireData", "Name:=", name, "Points:=", points]
+        arg2 = ["NAME:Attributes", "Page:=", page]
+        try:
+            wire_id = self.oeditor.CreateWire(arg1, arg2)
+            w = Wire(self._modeler, composed_name=wire_id)
+            if ":" in wire_id.split(";")[1]:
+                wire_id = int(wire_id.split(";")[1].split(":")[0])
+            else:
+                wire_id = int(wire_id.split(";")[1])
+            if not name:
+                name = generate_unique_name("Wire")
+            w.name = name
+            w.id = int(wire_id)
+            return w
+        except Exception:
+            return False
+
+    @pyaedt_function_handler()
+    def _create_nport_multi(
+        self,
+        component_type: int,
+        component_name: str,
+        num_ports: int,
+        array_name: str,
+        array_id_name: str,
+        files: list,
+        location: list | None = None,
+        page: int = 1,
+        angle: float = 0.0,
+        flip: bool = False,
+    ) -> CircuitComponent:
+        """Create an N-port multi-component by importing an touchstone or a W-element file.
+
+        Parameters
+        ----------
+        component_name : str
+            Name of the component to create.
+        num_ports : int
+            Number of ports or transmission lines.
+        array_name : str
+            Name of the array variable. It must start with the ``$`` symbol as it defines a project variable.
+        array_id_name : str
+            Name of the array ID variable. It must start with the ``$`` symbol as it defines a project variable.
+        files : list
+            List of touchstone file paths to import.
+        location : tuple, optional
+            Tuple of ``(x, y)`` coordinates for component location.
+            If ``None``, default location is used. Default is ``None``.
+        page : int, optional
+            Schematics page number. Default is ``1``.
+        angle : float, optional
+            Rotation angle in degrees. Default is ``0.0``.
+        flip : bool, optional
+            Whether to flip the component. Default is ``False``.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modeler.cad.object_3dcircuit.CircuitComponent`
+            Component object.
+
+        """
+        if "$" not in array_name[0]:
+            array_name = "$" + array_name
+            self.logger.warning("Added '$' to the beginning of 'array_name' as it defines a project variable.")
+        if "$" not in array_id_name[0]:
+            array_id_name = "$" + array_id_name
+            self.logger.warning("Added '$' to the beginning of array_id_name as it defines a project variable.")
+
+        for f in files:
+            if not Path(f).exists():
+                raise FileNotFoundError(f"Cannot find file: {str(f)}")
+
+        files_ = [str(f) for f in files]
+        files_args = ["NAME:Files"]
+        files_args.extend(["Files:=", files_])
+
+        options_args = ["NAME:Options"]
+        options_args.extend(["NumPortsOrLines:=", num_ports])
+        options_args.extend(["CreateArray:=", True])
+        options_args.extend(["ArrayName:=", array_name])
+        options_args.extend(["ArrayIdName:=", array_id_name])
+        options_args.extend(["CompType:=", component_type])
+        options_args.extend(["CompName:=", component_name])
+
+        self.ocomponent_manager.ImportSandWComponent(files_args, options_args)
+
+        return self.create_component(
+            component_library=None,
+            component_name=component_name,
+            location=location,
+            page=page,
+            angle=angle,
+            flip=flip,
+        )
+
+    @pyaedt_function_handler()
+    def create_touchstone_component_multi(
+        self,
+        component_name: str,
+        num_ports: int,
+        array_name: str,
+        array_id_name: str,
+        files: list,
+        location: list | None = None,
+        page: int = 1,
+        angle: int | float = 0.0,
+        flip: bool = False,
+    ) -> CircuitComponent:
+        """Create an N-port multi-component by importing touchstone files.
+
+        Parameters
+        ----------
+        component_name : str
+            Name of the component to create.
+        num_ports : int
+            Number of ports or transmission lines.
+        array_name : str
+            Name of the array variable. It must start with the ``$`` symbol as it defines a project variable.
+        array_id_name : str
+            Name of the array ID variable. It must start with the ``$`` symbol as it defines a project variable.
+        files : list
+            List of touchstone file paths to import.
+        location : tuple, optional
+            Tuple of ``(x, y)`` coordinates for component location.
+            If ``None``, default location is used. Default is ``None``.
+        page : int, optional
+            Schematics page number. Default is ``1``.
+        angle : int or float, optional
+            Rotation angle in degrees. Default is ``0.0``.
+        flip : bool, optional
+            Whether to flip the component. Default is ``False``.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modeler.cad.object_3dcircuit.CircuitComponent`
+            Component object.
+
+        >>> from ansys.aedt.core import Circuit
+        >>> aedtapp = Circuit()
+        >>> ts = ["path_to_file1.ts", "path_to_file2.ts"]
+        >>> c = aedtapp.modeler.schematic.create_touchstone_component_multi(
+        ...     component_name="nport",
+        ...     num_ports=4,
+        ...     array_name="$SElement",
+        ...     array_id_name="$SElement_id",
+        ...     files=[ts[0], ts[1]],
+        ... )
+
+        """
+        return self._create_nport_multi(
+            component_type=2,
+            component_name=component_name,
+            num_ports=num_ports,
+            array_name=array_name,
+            array_id_name=array_id_name,
+            files=files,
+            location=location,
+            page=page,
+            angle=angle,
+            flip=flip,
+        )
+
+    @pyaedt_function_handler()
+    def create_state_space_component_multi(
+        self,
+        component_name: str,
+        num_ports: int,
+        array_name: str,
+        array_id_name: str,
+        files: list,
+        location: list | None = None,
+        page: int = 1,
+        angle: int | float = 0.0,
+        flip: bool = False,
+    ) -> CircuitComponent:
+        """Create an N-port multi-component by importing state space files.
+
+        Parameters
+        ----------
+        component_name : str
+            Name of the component to create.
+        num_ports : int
+            Number of ports or transmission lines.
+        array_name : str
+            Name of the array variable. It must start with the ``$`` symbol as it defines a project variable.
+        array_id_name : str
+            Name of the array ID variable. It must start with the ``$`` symbol as it defines a project variable.
+        files : list
+            List of state space file paths to import.
+        location : tuple, optional
+            Tuple of ``(x, y)`` coordinates for component location.
+            If ``None``, default location is used. Default is ``None``.
+        page : int, optional
+            Schematics page number. Default is ``1``.
+        angle : int or float, optional
+            Rotation angle in degrees. Default is ``0.0``.
+        flip : bool, optional
+            Whether to flip the component. Default is ``False``.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modeler.cad.object_3dcircuit.CircuitComponent`
+            Component object.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> aedtapp = Circuit()
+        >>> sss = ["path_to_file1.sss", "path_to_file2.sss"]
+        >>> c = aedtapp.modeler.schematic.create_state_space_component_multi(
+        ...     component_name="nport",
+        ...     num_ports=4,
+        ...     array_name="$SSSElement",
+        ...     array_id_name="$SSSElement_id",
+        ...     files=[sss[0], sss[1]],
+        ...     location=["10mm", 2],
+        ... )
+
+        """
+        return self._create_nport_multi(
+            component_type=1,
+            component_name=component_name,
+            num_ports=num_ports,
+            array_name=array_name,
+            array_id_name=array_id_name,
+            files=files,
+            location=location,
+            page=page,
+            angle=angle,
+            flip=flip,
+        )
+
+
+class ComponentInfo(PyAedtBase):
+    """Manages Circuit Catalog info.
+
+    Examples
+    --------
+    >>> from ansys.aedt.core import Circuit
+    >>> aedtapp = Circuit()
+    >>> sch = aedtapp.modeler.schematic
+    >>> catalog = sch.components_catalog
+    >>> components = catalog.components
+    >>> component_info = components["BJTs:Level01_NPN"]
+
+    """
+
+    def __init__(self, name: str, component_manager, file_name: str, component_library) -> None:
+        """ComponentInfo class."""
+        self._component_manager = component_manager
+        self.file_name = file_name
+        self.name = name
+        self.component_library = component_library
+        self._props = None
+
+    @property
+    def props(self) -> dict:
+        """Retrieve the component properties.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> aedtapp = Circuit()
+        >>> sch = aedtapp.modeler.schematic
+        >>> catalog = sch.components_catalog
+        >>> components = catalog.components
+        >>> component_info = components["BJTs:Level01_NPN"]
+        >>> component_info.props
+
+        """
+        if not self._props:
+            self._props = load_keyword_in_aedt_file(self.file_name, self.name)
+        return self._props
+
+    @pyaedt_function_handler()
+    def place(
+        self,
+        assignment: str = None,
+        location: list = None,
+        angle: int = 0,
+        use_instance_id_netlist: bool = False,
+        page: int = 1,
+    ) -> CircuitComponent:
+        """Create a component from a library.
+
+        Parameters
+        ----------
+        assignment : str, optional
+            Name of the instance. The default is ``None.``
+        location : list of float, optional
+            Position on the X axis and Y axis.
+        angle : optional
+            Angle rotation in degrees. The default is ``0``.
+        use_instance_id_netlist : bool, optional
+            Whether to enable the instance ID in the net list.
+            The default is ``False``.
+        page: int, optional
+            Schematic page number. The default value is ``1``.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modeler.circuits.object_3d_circuit.CircuitComponent`
+            Circuit Component Object.
+
+        References
+        ----------
+        >>> oEditor.CreateComponent
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> aedtapp = Circuit()
+        >>> sch = aedtapp.modeler.schematic
+        >>> catalog = sch.components_catalog
+        >>> components = catalog.components
+        >>> component_info = components["BJTs:Level01_NPN"]
+        >>> component_info.place()
+
+        """
+        if location is None:
+            location = []
+        return self._component_manager.create_component(
+            name=assignment,
+            component_library=self.component_library,
+            component_name=self.name,
+            location=location,
+            angle=angle,
+            use_instance_id_netlist=use_instance_id_netlist,
+            page=page,
+        )
+
+
+class ComponentCatalog(PyAedtBase):
+    """Indexes Circuit Sys Catalog.
+
+    Examples
+    --------
+    >>> from ansys.aedt.core import Circuit
+    >>> aedtapp = Circuit()
+    >>> sch = aedtapp.modeler.schematic
+    >>> catalog = sch.components_catalog
+
+    """
+
+    @pyaedt_function_handler()
+    def __getitem__(self, name: str) -> ComponentInfo | list[ComponentInfo] | None:
+        """Get component from name.
+
+        Parameters
+        ----------
+        name : str
+            ID or name of the object.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modeler.cad.primitivesCircuit.ComponentInfo`
+            Circuit Component Info.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> aedtapp = Circuit()
+        >>> sch = aedtapp.modeler.schematic
+        >>> catalog = sch.components_catalog
+        >>> catalog["BJTs:Level01_NPN"]
+
+        """
+        if self._component_manager.design_type == "EMIT":
+            items = self.find_components("*" + name + "*")
+            # Return a list of components
+            return [self.components[item] for item in items] if items else []
+        else:
+            items = self.find_components("*" + name)
+            # Return a single component or None
+            if items and len(items) == 1:
+                return self.components[items[0]]
+            elif len(items) > 1:
+                self._component_manager._logger.warning("Multiple components found.")
+                return None
+            else:
+                self._component_manager._logger.warning("Component not found.")
+                return None
+
+    def __init__(self, component_manager) -> None:
+        """Initialize the Circuit Component Manager."""
+        self._component_manager = component_manager
+        self._app = self._component_manager._app
+        self.components = {}
+        self._index_components()
+
+    @pyaedt_function_handler()
+    def _index_components(self, library_path=None):
+        if library_path:
+            sys_files = recursive_glob(library_path, "*.aclb")
+            root = Path(library_path).name
+        else:
+            sys_files = recursive_glob(Path(self._app.syslib) / self._component_manager.design_libray, "*.aclb")
+            root = Path(self._app.syslib).name
+        for file in sys_files:
+            comps1 = load_keyword_in_aedt_file(file, "DefInfo")
+            comps2 = load_keyword_in_aedt_file(file, "CompInfo")
+            comps = comps1.get("DefInfo", {})
+            comps.update(comps2.get("CompInfo", {}))
+            for compname, comp_value in comps.items():
+                root_name = str(Path(file).with_suffix(""))
+                full_path = list(Path(root_name).parts)
+                comp_id = full_path.index(root) + 1
+                if self._component_manager.design_libray in full_path[comp_id:]:
+                    comp_id += 1
+                comp_lib = "\\".join(full_path[comp_id:]) + ":" + compname
+                self.components[comp_lib] = ComponentInfo(
+                    compname, self._component_manager, file, comp_lib.split(":")[0]
+                )
+
+    @pyaedt_function_handler()
+    def find_components(self, filter_str: str = "*") -> list:
+        """Find all components with given filter wildcards.
+
+        Parameters
+        ----------
+        filter_str : str
+            Filter String to search.
+
+        Returns
+        -------
+        list
+            List of matching component names.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> aedtapp = Circuit()
+        >>> sch = aedtapp.modeler.schematic
+        >>> catalog = sch.components_catalog
+        >>> catalog.find_components()
+
+        """
+        c = []
+        for el in list(self.components.keys()):
+            if filter_string(el, filter_str):
+                c.append(el)
+        return c

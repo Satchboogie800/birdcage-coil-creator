@@ -1,0 +1,98 @@
+// Proto file representing the EDB Edge Term class
+
+syntax = "proto3";
+
+package ansys.api.edb.v1;
+
+import "ansys/api/edb/v1/edb_messages.proto";
+import "ansys/api/edb/v1/arc_data.proto";
+import "ansys/api/edb/v1/point_data.proto";
+import "ansys/api/edb/v1/refs.proto";
+
+enum EdgeType
+{
+  PRIMITIVE_EDGE = 0;
+  PAD_EDGE = 1;
+}
+
+service EdgeService {
+
+  // summary: Get the edge type
+  // io_flags:
+  //   - cache
+  rpc GetEdgeType (EDBObjMessage) returns (EdgeTypeMessage) {}
+
+  // summary: Create an edge
+  // io_flags:
+  //   - buffer
+  //   - returns_future
+  rpc Create (EdgeCreationMessage) returns (EDBObjMessage) {}
+
+  // summary: Get the edge parameters
+  // io_flags:
+  //   - cache
+  rpc GetParameters (EDBObjMessage) returns (EdgeParamsMessage) {}
+}
+
+service EdgeTerminalService {
+  // summary: Create an edge terminal
+  // io_flags:
+  //   - buffer
+  //   - returns_future
+  rpc Create (EdgeTermCreationMessage) returns (EDBObjMessage) {}
+
+  // summary: Get edges
+  // io_flags:
+  //   - read_no_cache
+  rpc GetEdges (EDBObjMessage) returns (EDBObjCollectionMessage) {}
+
+  // summary: Stream edges
+  // io_flags:
+  //   - read_no_cache
+  rpc StreamEdges (EDBObjMessage) returns (stream EDBObjCollectionMessage) {}
+
+  // summary: Get edges
+  // io_flags:
+  //   - buffer
+  rpc SetEdges (EdgeTermSetEdgesMessage) returns (google.protobuf.Empty) {}
+}
+
+message EdgeTypeMessage {
+  EdgeType t = 1;
+}
+
+message EdgeCreationMessage {
+  EdgeType edge_type = 1;
+  EdgeParamsMessage params = 2;
+}
+
+message EdgeParamsMessage {
+  oneof type {
+    PrimitiveEdgeParamsMessage primitve_params = 1;
+    PadEdgeParamsMessage pad_params = 2;
+  }
+}
+
+message PrimitiveEdgeParamsMessage {
+  EDBObjMessage primitive = 1;
+  PointMessage point = 2;
+}
+
+message PadEdgeParamsMessage {
+  EDBObjMessage padstack = 1;
+  LayerRefMessage layer = 2;
+  ArcMessage arc = 3;
+}
+
+message EdgeTermCreationMessage {
+  EDBObjMessage layout = 1;
+  NetRefMessage net = 2;
+  string name = 3;
+  repeated EDBObjMessage edges = 4;
+  bool is_ref = 5;
+}
+
+message EdgeTermSetEdgesMessage {
+  EDBObjMessage term = 1;
+  repeated EDBObjMessage edges = 2;
+}

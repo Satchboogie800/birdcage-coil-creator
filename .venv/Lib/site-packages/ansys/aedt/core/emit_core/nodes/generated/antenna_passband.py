@@ -1,0 +1,301 @@
+# -*- coding: utf-8 -*-
+#
+# Copyright (C) 2021 - 2026 Synopsys, Inc. and ANSYS, Inc. All rights reserved.
+# SPDX-License-Identifier: MIT
+#
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+from ansys.aedt.core.emit_core.nodes.emit_node import EmitNode
+from ansys.aedt.core.internal.checks import min_aedt_version
+
+
+class AntennaPassband(EmitNode):
+    """Provide antenna passband."""
+
+    def __init__(self, emit_obj, result_id, node_id) -> None:
+        EmitNode.__init__(self, emit_obj, result_id, node_id)
+        self._is_component = False
+
+    @property
+    @min_aedt_version("2025.2")
+    def parent(self) -> EmitNode:
+        """The parent of this emit node.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> _, ant = app.schematic.create_radio_antenna("Bluetooth")
+        >>> passband = ant.add_antenna_passband()
+        >>> passband.parent
+
+        """
+        return self._parent
+
+    @property
+    @min_aedt_version("2025.2")
+    def node_type(self) -> str:
+        """The type of this emit node.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> _, ant = app.schematic.create_radio_antenna("Bluetooth")
+        >>> passband = ant.add_antenna_passband()
+        >>> passband.node_type
+
+        """
+        return self._node_type
+
+    @min_aedt_version("2027.1")
+    def export_to_csv(self, file_name: str) -> str:
+        """Export's the data for this node"""
+        return self._export_to_csv(file_name, "", "")
+
+    @min_aedt_version("2027.1")
+    def plot(self):
+        """Bring up a Cartesian plot for this node"""
+        return self._plot("", "")
+
+    @min_aedt_version("2025.2")
+    def duplicate(self, new_name: str = "") -> EmitNode:
+        """Duplicate this node.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> _, ant = app.schematic.create_radio_antenna("Bluetooth")
+        >>> passband = ant.add_antenna_passband()
+        >>> passband_copy = passband.duplicate("passband_copy")
+
+        """
+        return self._duplicate(new_name)
+
+    @min_aedt_version("2025.2")
+    def delete(self) -> None:
+        """Delete this node.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> _, ant = app.schematic.create_radio_antenna("Bluetooth")
+        >>> passband = ant.add_antenna_passband()
+        >>> passband.delete()
+
+        """
+        self._delete()
+
+    @property
+    @min_aedt_version("2025.2")
+    def enabled(self) -> bool:
+        """Enabled state for this node.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> _, ant = app.schematic.create_radio_antenna("Bluetooth")
+        >>> passband = ant.add_antenna_passband()
+        >>> passband.enabled = True
+
+        """
+        return self._get_property("Enabled") == "true"
+
+    @enabled.setter
+    @min_aedt_version("2025.2")
+    def enabled(self, value: bool) -> None:
+        self._set_property("Enabled", f"{str(value).lower()}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def passband_loss(self) -> float:
+        """Passband loss.
+
+        Value should be between 0 and 100.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> _, ant = app.schematic.create_radio_antenna("Bluetooth")
+        >>> passband = ant.add_antenna_passband()
+        >>> passband.passband_loss = 0
+
+        """
+        val = self._get_property("Passband Loss")
+        return float(val)
+
+    @passband_loss.setter
+    @min_aedt_version("2025.2")
+    def passband_loss(self, value: float) -> None:
+        self._set_property("Passband Loss", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def out_of_band_attenuation(self) -> float:
+        """Out of band antenna loss.
+
+        Value should be between 0 and 200.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> _, ant = app.schematic.create_radio_antenna("Bluetooth")
+        >>> passband = ant.add_antenna_passband()
+        >>> passband.out_of_band_attenuation = 40
+
+        """
+        val = self._get_property("Out of Band Attenuation")
+        return float(val)
+
+    @out_of_band_attenuation.setter
+    @min_aedt_version("2025.2")
+    def out_of_band_attenuation(self, value: float) -> None:
+        self._set_property("Out of Band Attenuation", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def lower_stop_band(self) -> float:
+        """Lower stop band frequency.
+
+        Value should be between 1 and 100e9.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> _, ant = app.schematic.create_radio_antenna("Bluetooth")
+        >>> passband = ant.add_antenna_passband()
+        >>> passband.lower_stop_band = 80e6
+
+        """
+        val = self._get_property("Lower Stop Band")
+        val = self._convert_from_internal_units(float(val), "Freq")
+        return float(val)
+
+    @lower_stop_band.setter
+    @min_aedt_version("2025.2")
+    def lower_stop_band(self, value: float | str) -> None:
+        value = self._convert_to_internal_units(value, "Freq")
+        self._set_property("Lower Stop Band", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def lower_cutoff(self) -> float:
+        """Lower cutoff frequency.
+
+        Value should be between 1 and 100e9.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> _, ant = app.schematic.create_radio_antenna("Bluetooth")
+        >>> passband = ant.add_antenna_passband()
+        >>> passband.lower_cutoff = 90e6
+
+        """
+        val = self._get_property("Lower Cutoff")
+        val = self._convert_from_internal_units(float(val), "Freq")
+        return float(val)
+
+    @lower_cutoff.setter
+    @min_aedt_version("2025.2")
+    def lower_cutoff(self, value: float | str) -> None:
+        value = self._convert_to_internal_units(value, "Freq")
+        self._set_property("Lower Cutoff", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def higher_cutoff(self) -> float:
+        """Higher cutoff frequency.
+
+        Value should be between 1 and 100e9.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> _, ant = app.schematic.create_radio_antenna("Bluetooth")
+        >>> passband = ant.add_antenna_passband()
+        >>> passband.higher_cutoff = 110e6
+
+        """
+        val = self._get_property("Higher Cutoff")
+        val = self._convert_from_internal_units(float(val), "Freq")
+        return float(val)
+
+    @higher_cutoff.setter
+    @min_aedt_version("2025.2")
+    def higher_cutoff(self, value: float | str) -> None:
+        value = self._convert_to_internal_units(value, "Freq")
+        self._set_property("Higher Cutoff", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def higher_stop_band(self) -> float:
+        """Higher stop band frequency.
+
+        Value should be between 1 and 100e9.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> _, ant = app.schematic.create_radio_antenna("Bluetooth")
+        >>> passband = ant.add_antenna_passband()
+        >>> passband.higher_stop_band = 120e6
+
+        """
+        val = self._get_property("Higher Stop Band")
+        val = self._convert_from_internal_units(float(val), "Freq")
+        return float(val)
+
+    @higher_stop_band.setter
+    @min_aedt_version("2025.2")
+    def higher_stop_band(self, value: float | str) -> None:
+        value = self._convert_to_internal_units(value, "Freq")
+        self._set_property("Higher Stop Band", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def notes(self) -> str:
+        """Expand to view/edit notes stored with the project.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> _, ant = app.schematic.create_radio_antenna("Bluetooth")
+        >>> passband = ant.add_antenna_passband()
+        >>> passband.notes = "example_value"
+
+        """
+        val = self._get_property("Notes")
+        return val
+
+    @notes.setter
+    @min_aedt_version("2025.2")
+    def notes(self, value: str) -> None:
+        self._set_property("Notes", f"{value}")

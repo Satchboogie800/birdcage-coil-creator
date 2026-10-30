@@ -1,0 +1,1918 @@
+# -*- coding: utf-8 -*-
+#
+# Copyright (C) 2021 - 2026 Synopsys, Inc. and ANSYS, Inc. All rights reserved.
+# SPDX-License-Identifier: MIT
+#
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+import copy
+import re
+
+from ansys.aedt.core.base import PyAedtBase
+from ansys.aedt.core.generic.general_methods import pyaedt_function_handler
+from ansys.aedt.core.modules.circuit_templates import SourceKeys
+
+
+class Sources(PyAedtBase):
+    """Manages sources in Circuit projects.
+
+    Examples
+    --------
+    >>> from ansys.aedt.core.modules.boundary.circuit_boundary import Sources
+    >>> source = Sources(app, name="V1")
+
+    """
+
+    def __init__(self, app, name: str, source_type=None) -> None:
+        self._app = app
+        self._name = name
+        self._props = self._source_props(name, source_type)
+        self.source_type = source_type
+        if not source_type:
+            self.source_type = self._source_type_by_key()
+        self._auto_update = True
+
+    @property
+    def name(self) -> str:
+        """Source name.
+
+        Returns
+        -------
+        str
+            Source name.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import Sources
+        >>> source = Sources(app, name="V1")
+        >>> source.name
+        'V1'
+
+        """
+        return self._name
+
+    @name.setter
+    def name(self, source_name: str) -> None:
+        if source_name not in self._app.source_names:
+            if source_name != self._name:
+                original_name = self._name
+                self._name = source_name
+                for port in self._app.excitation_names:
+                    if original_name in self._app.design_excitations[port].props["EnabledPorts"]:
+                        self._app.design_excitations[port].props["EnabledPorts"] = [
+                            w.replace(original_name, source_name)
+                            for w in self._app.design_excitations[port].props["EnabledPorts"]
+                        ]
+                    if original_name in self._app.design_excitations[port].props["EnabledAnalyses"]:
+                        self._app.design_excitations[port].props["EnabledAnalyses"][source_name] = (
+                            self._app.design_excitations[port].props["EnabledAnalyses"].pop(original_name)
+                        )
+                self.update(original_name)
+        else:
+            self._logger.warning("Name %s already assigned in the design", source_name)
+
+    @property
+    def _logger(self):
+        """Logger."""
+        return self._app.logger
+
+    @pyaedt_function_handler()
+    def _source_props(self, source, source_type=None):
+        source_prop_dict = {}
+        if source in self._app.source_names:
+            excitations_oo = self._app.get_oo_object(self._app.odesign, "Excitations")
+            for el in self._app.get_oo_properties(excitations_oo, source):
+                if el == "CosimDefinition":
+                    source_prop_dict[el] = None
+                elif el == "FreqDependentSourceData":
+                    data = self._app.design_properties["NexximSources"]["Data"][source]["FDSFileName"]
+                    freqs = re.findall(r"freqs=\[(.*?)\]", data)
+                    magnitude = re.findall(r"magnitude=\[(.*?)\]", data)
+                    angle = re.findall(r"angle=\[(.*?)\]", data)
+                    vreal = re.findall(r"vreal=\[(.*?)\]", data)
+                    vimag = re.findall(r"vimag=\[(.*?)\]", data)
+                    source_file = re.findall("voltage_source_file=", data)
+                    source_prop_dict["frequencies"] = None
+                    source_prop_dict["vmag"] = None
+                    source_prop_dict["vang"] = None
+                    source_prop_dict["vreal"] = None
+                    source_prop_dict["vimag"] = None
+                    source_prop_dict["fds_filename"] = None
+                    source_prop_dict["magnitude_angle"] = False
+                    source_prop_dict["FreqDependentSourceData"] = data
+                    if freqs:
+                        source_prop_dict["frequencies"] = [float(i) for i in freqs[0].split()]
+                    if magnitude:
+                        source_prop_dict["vmag"] = [float(i) for i in magnitude[0].split()]
+                    if angle:
+                        source_prop_dict["vang"] = [float(i) for i in angle[0].split()]
+                    if vreal:
+                        source_prop_dict["vreal"] = [float(i) for i in vreal[0].split()]
+                    if vimag:
+                        source_prop_dict["vimag"] = [float(i) for i in vimag[0].split()]
+                    if source_file:
+                        source_prop_dict["fds_filename"] = data[len(re.findall("voltage_source_file=", data)[0]) :]
+                    else:
+                        if freqs and magnitude and angle:
+                            source_prop_dict["magnitude_angle"] = True
+                        elif freqs and vreal and vimag:
+                            source_prop_dict["magnitude_angle"] = False
+
+                elif el != "Name" and el != "Noise":
+                    source_prop_dict[el] = self._app.get_oo_property_value(excitations_oo, source, el)
+                    if not source_prop_dict[el]:
+                        source_prop_dict[el] = ""
+        else:
+            if source_type in SourceKeys.SourceNames:
+                command_template = SourceKeys.SourceTemplates[source_type]
+                commands = copy.deepcopy(command_template)
+                props = [value for value in commands if isinstance(value, list)]
+                for el in props[0]:
+                    if isinstance(el, list):
+                        if el[0] == "CosimDefinition":
+                            source_prop_dict[el[0]] = None
+                        elif el[0] == "FreqDependentSourceData":
+                            source_prop_dict["frequencies"] = None
+                            source_prop_dict["vmag"] = None
+                            source_prop_dict["vang"] = None
+                            source_prop_dict["vreal"] = None
+                            source_prop_dict["vimag"] = None
+                            source_prop_dict["fds_filename"] = None
+                            source_prop_dict["magnitude_angle"] = True
+                            source_prop_dict["FreqDependentSourceData"] = ""
+
+                        elif el[0] != "ModelName" and el[0] != "LabelID":
+                            source_prop_dict[el[0]] = el[3]
+
+        return source_prop_dict
+
+    @pyaedt_function_handler()
+    def _update_command(self, name: str, source_prop_dict, source_type, fds_filename=None):
+        command_template = SourceKeys.SourceTemplates[source_type]
+        commands = copy.deepcopy(command_template)
+        commands[0] = "NAME:" + name
+        commands[10] = source_prop_dict["Netlist"]
+        if fds_filename:
+            commands[14] = fds_filename
+        cont = 0
+        props = [value for value in commands if isinstance(value, list)]
+        for command in props[0]:
+            if isinstance(command, list) and command[0] in source_prop_dict.keys() and command[0] != "CosimDefinition":
+                if command[0] == "Netlist":
+                    props[0].pop(cont)
+                elif command[0] == "file" and source_prop_dict[command[0]]:
+                    props[0][cont][3] = source_prop_dict[command[0]]
+                    props[0][cont][4] = source_prop_dict[command[0]]
+                elif command[0] == "FreqDependentSourceData" and fds_filename:
+                    props[0][cont][3] = fds_filename
+                    props[0][cont][4] = fds_filename
+                else:
+                    props[0][cont][3] = source_prop_dict[command[0]]
+            cont += 1
+
+        return commands
+
+    @pyaedt_function_handler()
+    def _set_excitation_prop(self, key: str, value) -> bool:
+        """Set a property on the source's underlying ``Excitations`` child object."""
+        excitations_oo = self._app.get_oo_object(self._app.odesign, "Excitations")
+        return self._app.set_oo_property_value(excitations_oo, self.name, key, value)
+
+    @pyaedt_function_handler()
+    def _source_type_by_key(self):
+        for source_name in SourceKeys.SourceNames:
+            template = SourceKeys.SourceProps[source_name]
+            if list(self._props.keys()) == template:
+                return source_name
+        return None
+
+    @pyaedt_function_handler()
+    def update(self, original_name: str = None, new_source: str = None) -> bool:
+        """Update the source in AEDT.
+
+        Parameters
+        ----------
+        original_name : str, optional
+            Original name of the source. The default value is ``None``.
+        new_source : str, optional
+            New name of the source. The default value is ``None``.
+
+        Returns
+        -------
+        bool
+            ``True`` when successful, ``False`` when failed.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import Sources
+        >>> source = Sources(app, name="V1")
+        >>> source.update(original_name="V1", new_source="V2")
+
+        """
+        arg0 = ["NAME:Data"]
+        if self.source_type != "VoltageFrequencyDependent":
+            fds_filename = None
+        else:
+            fds_filename = self._props["FreqDependentSourceData"]
+
+        for source in self._app.sources:
+            if "FreqDependentSourceData" in self._app.sources[source]._props.keys():
+                fds_filename_source = self._app.sources[source]._props["FreqDependentSourceData"]
+            else:
+                fds_filename_source = None
+            if source == self.name:
+                arg0.append(list(self._update_command(source, self._props, self.source_type, fds_filename)))
+            elif source != self.name and original_name == source:
+                arg0.append(
+                    list(
+                        self._update_command(
+                            self.name, self._props, self._app.sources[source].source_type, fds_filename
+                        )
+                    )
+                )
+            else:
+                arg0.append(
+                    list(
+                        self._update_command(
+                            source,
+                            self._app.sources[source]._props,
+                            self._app.sources[source].source_type,
+                            fds_filename_source,
+                        )
+                    )
+                )
+
+        if new_source and new_source not in self._app.sources:
+            arg0.append(list(self._update_command(self.name, self._props, self.source_type, fds_filename)))
+
+        arg1 = ["NAME:NexximSources", ["NAME:NexximSources", arg0]]
+        arg2 = ["NAME:ComponentConfigurationData"]
+
+        # Check Ports with Sources
+        arg3 = ["NAME:EnabledPorts"]
+        for source_name in self._app.sources:
+            excitation_source = []
+            for port in self._app.excitation_names:
+                # self._app.design_excitations[port]._props
+                if source_name in self._app.design_excitations[port].parameters["EnabledPorts"]:
+                    excitation_source.append(port)
+            arg3.append(source_name + ":=")
+            arg3.append(excitation_source)
+
+        if new_source and new_source not in self._app.sources:
+            arg3.append(new_source + ":=")
+            arg3.append([])
+
+        arg4 = ["NAME:EnabledMultipleComponents"]
+        for source_name in self._app.sources:
+            arg4.append(source_name + ":=")
+            arg4.append([])
+
+        if new_source and new_source not in self._app.sources:
+            arg4.append(new_source + ":=")
+            arg4.append([])
+
+        arg5 = ["NAME:EnabledAnalyses"]
+        for source_name in self._app.sources:
+            arg6 = ["NAME:" + source_name]
+            for port in self._app.excitation_names:
+                if source_name in self._app.design_excitations[port].parameters["EnabledAnalyses"]:
+                    arg6.append(port + ":=")
+                    arg6.append(self._app.design_excitations[port].parameters["EnabledAnalyses"][source_name])
+                else:
+                    arg6.append(port + ":=")
+                    arg6.append([])
+            arg5.append(arg6)
+
+        if new_source and new_source not in self._app.sources:
+            arg6 = ["NAME:" + new_source]
+            for port in self._app.excitation_names:
+                arg6.append(port + ":=")
+                arg6.append([])
+            arg5.append(arg6)
+
+        arg7 = ["NAME:ComponentConfigurationData", arg3, arg4, arg5]
+        arg2.append(arg7)
+
+        self._app.odesign.UpdateSources(arg1, arg2)
+        return True
+
+    @pyaedt_function_handler()
+    def delete(self) -> bool:
+        """Delete the source in AEDT.
+
+        Returns
+        -------
+        bool
+            ``True`` when successful, ``False`` when failed.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import Sources
+        >>> source = Sources(app, name="V1")
+        >>> source.delete()
+
+        """
+        self._app.modeler._odesign.DeleteSource(self.name)
+        for port in self._app.excitation_names:
+            if self.name in self._app.design_excitations[port].props["EnabledPorts"]:
+                self._app.design_excitations[port].props["EnabledPorts"].remove(self.name)
+            if self.name in self._app.design_excitations[port].props["EnabledAnalyses"]:
+                del self._app.design_excitations[port].props["EnabledAnalyses"][self.name]
+        return True
+
+    @pyaedt_function_handler()
+    def create(self) -> bool:
+        """Create a new source in AEDT.
+
+        Returns
+        -------
+        bool
+            ``True`` when successful, ``False`` when failed.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import Sources
+        >>> source = Sources(app, name="V1")
+        >>> source.create()
+
+        """
+        self.update(original_name=None, new_source=self.name)
+        return True
+
+
+class PowerSinSource(Sources):
+    """Power Sinusoidal Class.
+
+    Examples
+    --------
+    >>> import ansys.aedt.core as pyaedt
+    >>> from ansys.aedt.core.modules.boundary.circuit_boundary import PowerSinSource
+    >>> app = pyaedt.Circuit()
+    >>> source = PowerSinSource(app, name="P1")
+
+    """
+
+    def __init__(self, app, name: str, source_type=None) -> None:
+        Sources.__init__(self, app, name, source_type)
+
+    @property
+    def _child(self):
+        excitations_oo = self._app.get_oo_object(self._app.odesign, "Excitations")
+        return self._app.get_oo_object(excitations_oo, self.name)
+
+    @property
+    def ac_magnitude(self) -> str:
+        """AC magnitude value.
+
+        Returns
+        -------
+        str
+            AC magnitude value.
+
+        Examples
+        --------
+        >>> import ansys.aedt.core as pyaedt
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import PowerSinSource
+        >>> app = pyaedt.Circuit()
+        >>> source = PowerSinSource(app, name="P1")
+        >>> source.ac_magnitude
+        "1V"
+
+        """
+        return self._props["ACMAG"]
+
+    @ac_magnitude.setter
+    def ac_magnitude(self, value: str) -> None:
+        self._props["ACMAG"] = value
+        self._set_excitation_prop("ACMAG", value)
+
+    @property
+    def ac_phase(self) -> str:
+        """AC phase value.
+
+        Returns
+        -------
+        str
+            AC phase value.
+
+        Examples
+        --------
+        >>> import ansys.aedt.core as pyaedt
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import PowerSinSource
+        >>> app = pyaedt.Circuit()
+        >>> source = PowerSinSource(app, name="P1")
+        >>> source.ac_phase
+        "0deg"
+
+        """
+        return self._props["ACPHASE"]
+
+    @ac_phase.setter
+    def ac_phase(self, value: str) -> None:
+        self._props["ACPHASE"] = value
+        self._set_excitation_prop("ACPHASE", value)
+
+    @property
+    def dc_magnitude(self) -> str:
+        """DC voltage value.
+
+        Returns
+        -------
+        str
+            DC voltage value.
+
+        Examples
+        --------
+        >>> import ansys.aedt.core as pyaedt
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import PowerSinSource
+        >>> app = pyaedt.Circuit()
+        >>> source = PowerSinSource(app, name="P1")
+        >>> source.dc_magnitude
+        "0V"
+
+        """
+        return self._props["DC"]
+
+    @dc_magnitude.setter
+    def dc_magnitude(self, value: str) -> None:
+        self._props["DC"] = value
+        self._set_excitation_prop("DC", value)
+
+    @property
+    def power_offset(self) -> str:
+        """Power offset from zero watts.
+
+        Returns
+        -------
+        str
+            Power offset from zero watts.
+
+        Examples
+        --------
+        >>> import ansys.aedt.core as pyaedt
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import PowerSinSource
+        >>> app = pyaedt.Circuit()
+        >>> source = PowerSinSource(app, name="P1")
+        >>> source.power_offset
+        "0W"
+
+        """
+        return self._props["VO"]
+
+    @power_offset.setter
+    def power_offset(self, value: str) -> None:
+        self._props["VO"] = value
+        self._set_excitation_prop("VO", value)
+
+    @property
+    def power_magnitude(self) -> str:
+        """Available power of the source above power offset.
+
+        Returns
+        -------
+        str
+            Available power of the source above power offset.
+
+        Examples
+        --------
+        >>> import ansys.aedt.core as pyaedt
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import PowerSinSource
+        >>> app = pyaedt.Circuit()
+        >>> source = PowerSinSource(app, name="P1")
+        >>> source.power_magnitude
+        "1W"
+
+        """
+        return self._props["POWER"]
+
+    @power_magnitude.setter
+    def power_magnitude(self, value: str) -> None:
+        self._props["POWER"] = value
+        self._set_excitation_prop("POWER", value)
+
+    @property
+    def frequency(self) -> str:
+        """Frequency.
+
+        Returns
+        -------
+        str
+            Frequency.
+
+        Examples
+        --------
+        >>> import ansys.aedt.core as pyaedt
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import PowerSinSource
+        >>> app = pyaedt.Circuit()
+        >>> source = PowerSinSource(app, name="P1")
+        >>> source.frequency
+        "1GHz"
+
+        """
+        return self._props["FREQ"]
+
+    @frequency.setter
+    def frequency(self, value: str) -> None:
+        self._props["FREQ"] = value
+        self._set_excitation_prop("FREQ", value)
+
+    @property
+    def delay(self) -> str:
+        """Delay to start of sine wave.
+
+        Returns
+        -------
+        str
+            Delay to start of sine wave.
+
+        Examples
+        --------
+        >>> import ansys.aedt.core as pyaedt
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import PowerSinSource
+        >>> app = pyaedt.Circuit()
+        >>> source = PowerSinSource(app, name="P1")
+        >>> source.delay
+        "0s"
+
+        """
+        return self._props["TD"]
+
+    @delay.setter
+    def delay(self, value: str) -> None:
+        self._props["TD"] = value
+        self._set_excitation_prop("TD", value)
+
+    @property
+    def damping_factor(self) -> str:
+        """Damping factor.
+
+        Returns
+        -------
+        str
+            Damping factor.
+
+        Examples
+        --------
+        >>> import ansys.aedt.core as pyaedt
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import PowerSinSource
+        >>> app = pyaedt.Circuit()
+        >>> source = PowerSinSource(app, name="P1")
+        >>> source.damping_factor
+        "0"
+
+        """
+        return self._props["ALPHA"]
+
+    @damping_factor.setter
+    def damping_factor(self, value: str) -> None:
+        self._props["ALPHA"] = value
+        self._set_excitation_prop("ALPHA", value)
+
+    @property
+    def phase_delay(self) -> str:
+        """Phase delay.
+
+        Returns
+        -------
+        str
+            Phase delay.
+
+        Examples
+        --------
+        >>> import ansys.aedt.core as pyaedt
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import PowerSinSource
+        >>> app = pyaedt.Circuit()
+        >>> source = PowerSinSource(app, name="P1")
+        >>> source.phase_delay
+        "0deg"
+
+        """
+        return self._props["THETA"]
+
+    @phase_delay.setter
+    def phase_delay(self, value: str) -> None:
+        self._props["THETA"] = value
+        self._set_excitation_prop("THETA", value)
+
+    @property
+    def tone(self) -> str:
+        """Frequency to use for harmonic balance.
+
+        Returns
+        -------
+        str
+            Frequency to use for harmonic balance.
+
+        Examples
+        --------
+        >>> import ansys.aedt.core as pyaedt
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import PowerSinSource
+        >>> app = pyaedt.Circuit()
+        >>> source = PowerSinSource(app, name="P1")
+        >>> source.tone
+        "1GHz"
+
+        """
+        return self._props["TONE"]
+
+    @tone.setter
+    def tone(self, value: str) -> None:
+        self._props["TONE"] = value
+        self._set_excitation_prop("TONE", value)
+
+
+class PowerIQSource(Sources):
+    """Power IQ Class.
+
+    Examples
+    --------
+    >>> import ansys.aedt.core as pyaedt
+    >>> from ansys.aedt.core.modules.boundary.circuit_boundary import PowerIQSource
+    >>> app = pyaedt.Circuit()
+    >>> source = PowerIQSource(app, name="IQ1")
+
+    """
+
+    def __init__(self, app, name: str, source_type=None) -> None:
+        Sources.__init__(self, app, name, source_type)
+
+    @property
+    def _child(self):
+        excitations_oo = self._app.get_oo_object(self._app.odesign, "Excitations")
+        return self._app.get_oo_object(excitations_oo, self.name)
+
+    @property
+    def carrier_frequency(self) -> str:
+        """Carrier frequency value.
+
+        Returns
+        -------
+        str
+            Carrier frequency value.
+
+        Examples
+        --------
+        >>> import ansys.aedt.core as pyaedt
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import PowerIQSource
+        >>> app = pyaedt.Circuit()
+        >>> source = PowerIQSource(app, name="IQ1")
+        >>> source.carrier_frequency
+        "1GHz"
+
+        """
+        return self._props["FC"]
+
+    @carrier_frequency.setter
+    def carrier_frequency(self, value: str) -> None:
+        self._props["FC"] = value
+        self._set_excitation_prop("FC", value)
+
+    @property
+    def sampling_time(self) -> str:
+        """Sampling time value.
+
+        Returns
+        -------
+        str
+            Sampling time value.
+
+        Examples
+        --------
+        >>> import ansys.aedt.core as pyaedt
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import PowerIQSource
+        >>> app = pyaedt.Circuit()
+        >>> source = PowerIQSource(app, name="IQ1")
+        >>> source.sampling_time
+        "1ns"
+
+        """
+        return self._props["TS"]
+
+    @sampling_time.setter
+    def sampling_time(self, value: str) -> None:
+        self._props["TS"] = value
+        self._set_excitation_prop("TS", value)
+
+    @property
+    def dc_magnitude(self) -> str:
+        """DC voltage value.
+
+        Returns
+        -------
+        str
+            DC voltage value.
+
+        Examples
+        --------
+        >>> import ansys.aedt.core as pyaedt
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import PowerIQSource
+        >>> app = pyaedt.Circuit()
+        >>> source = PowerIQSource(app, name="IQ1")
+        >>> source.dc_magnitude
+        "0V"
+
+        """
+        return self._props["DC"]
+
+    @dc_magnitude.setter
+    def dc_magnitude(self, value: str) -> None:
+        self._props["DC"] = value
+        self._set_excitation_prop("DC", value)
+
+    @property
+    def repeat_from(self) -> str:
+        """Repeat from time.
+
+        Returns
+        -------
+        str
+            Repeat from time.
+
+        Examples
+        --------
+        >>> import ansys.aedt.core as pyaedt
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import PowerIQSource
+        >>> app = pyaedt.Circuit()
+        >>> source = PowerIQSource(app, name="IQ1")
+        >>> source.repeat_from
+        "0s"
+
+        """
+        return self._props["R"]
+
+    @repeat_from.setter
+    def repeat_from(self, value: str) -> None:
+        self._props["R"] = value
+        self._set_excitation_prop("R", value)
+
+    @property
+    def delay(self) -> str:
+        """Delay to start of sine wave.
+
+        Returns
+        -------
+        str
+            Delay to start of sine wave.
+
+        Examples
+        --------
+        >>> import ansys.aedt.core as pyaedt
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import PowerIQSource
+        >>> app = pyaedt.Circuit()
+        >>> source = PowerIQSource(app, name="IQ1")
+        >>> source.delay
+        "0s"
+
+        """
+        return self._props["TD"]
+
+    @delay.setter
+    def delay(self, value: str) -> None:
+        self._props["TD"] = value
+        self._set_excitation_prop("TD", value)
+
+    @property
+    def carrier_amplitude_voltage(self) -> str:
+        """Carrier amplitude value, voltage-based.
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import PowerIQSource
+        >>> import ansys.aedt.core as pyaedt
+        >>> app = pyaedt.Circuit()
+        >>> source = PowerIQSource(app, name="IQ1")
+        >>> source.carrier_amplitude_voltage
+
+        """
+        return self._props["V"]
+
+    @carrier_amplitude_voltage.setter
+    def carrier_amplitude_voltage(self, value: str) -> None:
+        self._props["V"] = value
+        self._set_excitation_prop("V", value)
+
+    @property
+    def carrier_amplitude_power(self) -> str:
+        """Carrier amplitude value, power-based.
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import PowerIQSource
+        >>> import ansys.aedt.core as pyaedt
+        >>> app = pyaedt.Circuit()
+        >>> source = PowerIQSource(app, name="IQ1")
+        >>> source.carrier_amplitude_power
+
+        """
+        return self._props["VA"]
+
+    @carrier_amplitude_power.setter
+    def carrier_amplitude_power(self, value: str) -> None:
+        self._props["VA"] = value
+        self._set_excitation_prop("VA", value)
+
+    @property
+    def carrier_offset(self) -> str:
+        """Carrier offset.
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import PowerIQSource
+        >>> import ansys.aedt.core as pyaedt
+        >>> app = pyaedt.Circuit()
+        >>> source = PowerIQSource(app, name="IQ1")
+        >>> source.carrier_offset
+
+        """
+        return self._props["VO"]
+
+    @carrier_offset.setter
+    def carrier_offset(self, value: str) -> None:
+        self._props["VO"] = value
+        self._set_excitation_prop("VO", value)
+
+    @property
+    def real_impedance(self) -> str:
+        """Real carrier impedance.
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import PowerIQSource
+        >>> import ansys.aedt.core as pyaedt
+        >>> app = pyaedt.Circuit()
+        >>> source = PowerIQSource(app, name="IQ1")
+        >>> source.real_impedance
+
+        """
+        return self._props["RZ"]
+
+    @real_impedance.setter
+    def real_impedance(self, value: str) -> None:
+        self._props["RZ"] = value
+        self._set_excitation_prop("RZ", value)
+
+    @property
+    def imaginary_impedance(self) -> str:
+        """Imaginary carrier impedance.
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import PowerIQSource
+        >>> import ansys.aedt.core as pyaedt
+        >>> app = pyaedt.Circuit()
+        >>> source = PowerIQSource(app, name="IQ1")
+        >>> source.imaginary_impedance
+
+        """
+        return self._props["IZ"]
+
+    @imaginary_impedance.setter
+    def imaginary_impedance(self, value: str) -> None:
+        self._props["IZ"] = value
+        self._set_excitation_prop("IZ", value)
+
+    @property
+    def damping_factor(self) -> str:
+        """Damping factor.
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import PowerIQSource
+        >>> import ansys.aedt.core as pyaedt
+        >>> app = pyaedt.Circuit()
+        >>> source = PowerIQSource(app, name="IQ1")
+        >>> source.damping_factor
+
+        """
+        return self._props["ALPHA"]
+
+    @damping_factor.setter
+    def damping_factor(self, value: str) -> None:
+        self._props["ALPHA"] = value
+        self._set_excitation_prop("ALPHA", value)
+
+    @property
+    def phase_delay(self) -> str:
+        """Phase delay.
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import PowerIQSource
+        >>> import ansys.aedt.core as pyaedt
+        >>> app = pyaedt.Circuit()
+        >>> source = PowerIQSource(app, name="IQ1")
+        >>> source.phase_delay
+
+        """
+        return self._props["THETA"]
+
+    @phase_delay.setter
+    def phase_delay(self, value: str) -> None:
+        self._props["THETA"] = value
+        self._set_excitation_prop("THETA", value)
+
+    @property
+    def tone(self) -> str:
+        """Frequency to use for harmonic balance.
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import PowerIQSource
+        >>> import ansys.aedt.core as pyaedt
+        >>> app = pyaedt.Circuit()
+        >>> source = PowerIQSource(app, name="IQ1")
+        >>> source.tone
+
+        """
+        return self._props["TONE"]
+
+    @tone.setter
+    def tone(self, value: str) -> None:
+        self._props["TONE"] = value
+        self._set_excitation_prop("TONE", value)
+
+    @property
+    def i_q_values(self) -> str:
+        """I and Q value at each timepoint.
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import PowerIQSource
+        >>> import ansys.aedt.core as pyaedt
+        >>> app = pyaedt.Circuit()
+        >>> source = PowerIQSource(app, name="IQ1")
+        >>> source.i_q_values
+
+        """
+        i_q = []
+        for cont in range(1, 20):
+            i_q.append(
+                [self._props["time" + str(cont)], self._props["ival" + str(cont)], self._props["qval" + str(cont)]]
+            )
+        return i_q
+
+    @i_q_values.setter
+    def i_q_values(self, value: list) -> None:
+        cont = 0
+        for point in value:
+            self._props["time" + str(cont + 1)] = point[0]
+            self._set_excitation_prop("time" + str(cont + 1), point[0])
+            self._props["ival" + str(cont + 1)] = point[1]
+            self._set_excitation_prop("ival" + str(cont + 1), point[1])
+            self._props["qval" + str(cont + 1)] = point[2]
+            self._set_excitation_prop("qval" + str(cont + 1), point[2])
+            cont += 1
+
+    @property
+    def file(
+        self,
+    ) -> str:
+        """File path with I and Q values.
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import PowerIQSource
+        >>> import ansys.aedt.core as pyaedt
+        >>> app = pyaedt.Circuit()
+        >>> source = PowerIQSource(app, name="IQ1")
+        >>> source.file
+
+        """
+        return self._props["file"]
+
+    @file.setter
+    def file(self, value: str) -> None:
+        self._props["file"] = str(value)
+        self.update()
+
+
+class VoltageFrequencyDependentSource(Sources):
+    """Voltage Frequency Dependent Class.
+
+    Examples
+    --------
+    >>> from ansys.aedt.core.modules.boundary.circuit_boundary import VoltageFrequencyDependentSource
+    >>> import ansys.aedt.core as pyaedt
+    >>> app = pyaedt.Circuit()
+    >>> source = VoltageFrequencyDependentSource(app, name="VFD1")
+
+    """
+
+    def __init__(self, app, name: str, source_type=None) -> None:
+        Sources.__init__(self, app, name, source_type)
+
+    @property
+    def _child(self):
+        excitations_oo = self._app.get_oo_object(self._app.odesign, "Excitations")
+        return self._app.get_oo_object(excitations_oo, self.name)
+
+    @property
+    def frequencies(self) -> list:
+        """List of frequencies in ``Hz``.
+
+        Returns
+        -------
+        list
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import VoltageFrequencyDependentSource
+        >>> import ansys.aedt.core as pyaedt
+        >>> app = pyaedt.Circuit()
+        >>> source = VoltageFrequencyDependentSource(app, name="VFD1")
+        >>> source.frequencies
+
+        """
+        return self._props["frequencies"]
+
+    @frequencies.setter
+    def frequencies(self, value: list) -> None:
+        self._props["frequencies"] = [float(i) for i in value]
+        self._update_prop()
+
+    @property
+    def vmag(self) -> list:
+        """List of magnitudes in ``V``.
+
+        Returns
+        -------
+        list
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import VoltageFrequencyDependentSource
+        >>> import ansys.aedt.core as pyaedt
+        >>> app = pyaedt.Circuit()
+        >>> source = VoltageFrequencyDependentSource(app, name="VFD1")
+        >>> source.vmag
+
+        """
+        return self._props["vmag"]
+
+    @vmag.setter
+    def vmag(self, value: list) -> None:
+        self._props["vmag"] = [float(i) for i in value]
+        self._update_prop()
+
+    @property
+    def vang(self) -> list:
+        """List of angles in ``rad``.
+
+        Returns
+        -------
+        list
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import VoltageFrequencyDependentSource
+        >>> import ansys.aedt.core as pyaedt
+        >>> app = pyaedt.Circuit()
+        >>> source = VoltageFrequencyDependentSource(app, name="VFD1")
+        >>> source.vang
+
+        """
+        return self._props["vang"]
+
+    @vang.setter
+    def vang(self, value: list) -> None:
+        self._props["vang"] = [float(i) for i in value]
+        self._update_prop()
+
+    @property
+    def vreal(self) -> list:
+        """List of real values in ``V``.
+
+        Returns
+        -------
+        list
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import VoltageFrequencyDependentSource
+        >>> import ansys.aedt.core as pyaedt
+        >>> app = pyaedt.Circuit()
+        >>> source = VoltageFrequencyDependentSource(app, name="VFD1")
+        >>> source.vreal
+
+        """
+        return self._props["vreal"]
+
+    @vreal.setter
+    def vreal(self, value: list) -> None:
+        self._props["vreal"] = [float(i) for i in value]
+        self._update_prop()
+
+    @property
+    def vimag(self) -> list:
+        """List of imaginary values in ``V``.
+
+        Returns
+        -------
+        list
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import VoltageFrequencyDependentSource
+        >>> import ansys.aedt.core as pyaedt
+        >>> app = pyaedt.Circuit()
+        >>> source = VoltageFrequencyDependentSource(app, name="VFD1")
+        >>> source.vimag
+
+        """
+        return self._props["vimag"]
+
+    @vimag.setter
+    def vimag(self, value: list) -> None:
+        self._props["vimag"] = [float(i) for i in value]
+        self._update_prop()
+
+    @property
+    def magnitude_angle(self) -> bool:
+        """Enable magnitude and angle data.
+
+        Returns
+        -------
+        bool
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import VoltageFrequencyDependentSource
+        >>> import ansys.aedt.core as pyaedt
+        >>> app = pyaedt.Circuit()
+        >>> source = VoltageFrequencyDependentSource(app, name="VFD1")
+        >>> source.magnitude_angle
+
+        """
+        return self._props["magnitude_angle"]
+
+    @magnitude_angle.setter
+    def magnitude_angle(self, value: bool) -> None:
+        self._props["magnitude_angle"] = value
+        self._update_prop()
+
+    @property
+    def fds_filename(self) -> str:
+        """FDS file path.
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import VoltageFrequencyDependentSource
+        >>> import ansys.aedt.core as pyaedt
+        >>> app = pyaedt.Circuit()
+        >>> source = VoltageFrequencyDependentSource(app, name="VFD1")
+        >>> source.fds_filename
+
+        """
+        return self._props["fds_filename"]
+
+    @fds_filename.setter
+    def fds_filename(self, name: str) -> None:
+        if not name:
+            self._props["fds_filename"] = None
+            self._update_prop()
+        else:
+            self._props["fds_filename"] = str(name)
+            self._props["FreqDependentSourceData"] = "voltage_source_file=" + str(name)
+            self.update()
+
+    @pyaedt_function_handler()
+    def _update_prop(self) -> bool:
+        if (
+            self._props["vmag"]
+            and self._props["vang"]
+            and self._props["frequencies"]
+            and self._props["magnitude_angle"]
+            and not self._props["fds_filename"]
+        ):
+            if len(self._props["vmag"]) == len(self._props["vang"]) == len(self._props["frequencies"]):
+                self._props["FreqDependentSourceData"] = (
+                    "freqs="
+                    + str(self._props["frequencies"]).replace(",", "")
+                    + " vmag="
+                    + str(self._props["vmag"]).replace(",", "")
+                    + " vang="
+                    + str(self._props["vang"]).replace(",", "")
+                )
+                self.update()
+        elif (
+            self._props["vreal"]
+            and self._props["vimag"]
+            and self._props["frequencies"]
+            and not self._props["magnitude_angle"]
+            and not self._props["fds_filename"]
+        ):
+            if len(self._props["vreal"]) == len(self._props["vimag"]) == len(self._props["frequencies"]):
+                self._props["FreqDependentSourceData"] = (
+                    "freqs="
+                    + str(self._props["frequencies"]).replace(",", "")
+                    + " vreal="
+                    + str(self._props["vreal"]).replace(",", "")
+                    + " vimag="
+                    + str(self._props["vimag"]).replace(",", "")
+                )
+                self.update()
+        else:
+            self._props["FreqDependentSourceData"] = ""
+            self.update()
+        return True
+
+
+class VoltageDCSource(Sources):
+    """Power Sinusoidal Class.
+
+    Examples
+    --------
+    >>> from ansys.aedt.core.modules.boundary.circuit_boundary import VoltageDCSource
+    >>> import ansys.aedt.core as pyaedt
+    >>> app = pyaedt.Circuit()
+    >>> source = VoltageDCSource(app, name="V1")
+
+    """
+
+    def __init__(self, app, name: str, source_type=None) -> None:
+        Sources.__init__(self, app, name, source_type)
+
+    @property
+    def _child(self):
+        excitations_oo = self._app.get_oo_object(self._app.odesign, "Excitations")
+        return self._app.get_oo_object(excitations_oo, self.name)
+
+    @property
+    def ac_magnitude(self) -> str:
+        """AC magnitude value.
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import VoltageDCSource
+        >>> import ansys.aedt.core as pyaedt
+        >>> app = pyaedt.Circuit()
+        >>> source = VoltageDCSource(app, name="V1")
+        >>> source.ac_magnitude
+
+        """
+        return self._props["ACMAG"]
+
+    @ac_magnitude.setter
+    def ac_magnitude(self, value: str) -> None:
+        self._props["ACMAG"] = value
+        self._set_excitation_prop("ACMAG", value)
+
+    @property
+    def ac_phase(self) -> str:
+        """AC phase value.
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import VoltageDCSource
+        >>> import ansys.aedt.core as pyaedt
+        >>> app = pyaedt.Circuit()
+        >>> source = VoltageDCSource(app, name="V1")
+        >>> source.ac_phase
+
+        """
+        return self._props["ACPHASE"]
+
+    @ac_phase.setter
+    def ac_phase(self, value: str) -> None:
+        self._props["ACPHASE"] = value
+        self._set_excitation_prop("ACPHASE", value)
+
+    @property
+    def dc_magnitude(self) -> str:
+        """DC voltage value.
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import VoltageDCSource
+        >>> import ansys.aedt.core as pyaedt
+        >>> app = pyaedt.Circuit()
+        >>> source = VoltageDCSource(app, name="V1")
+        >>> source.dc_magnitude
+
+        """
+        return self._props["DC"]
+
+    @dc_magnitude.setter
+    def dc_magnitude(self, value: str) -> None:
+        self._props["DC"] = value
+        self._set_excitation_prop("DC", value)
+
+
+class VoltageSinSource(Sources):
+    """Power Sinusoidal Class.
+
+    Examples
+    --------
+    >>> from ansys.aedt.core.modules.boundary.circuit_boundary import VoltageSinSource
+    >>> import ansys.aedt.core as pyaedt
+    >>> app = pyaedt.Circuit()
+    >>> source = VoltageSinSource(app, name="V1")
+
+    """
+
+    def __init__(self, app, name: str, source_type=None) -> None:
+        Sources.__init__(self, app, name, source_type)
+
+    @property
+    def _child(self):
+        excitations_oo = self._app.get_oo_object(self._app.odesign, "Excitations")
+        return self._app.get_oo_object(excitations_oo, self.name)
+
+    @property
+    def ac_magnitude(self) -> str:
+        """AC magnitude value.
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import VoltageSinSource
+        >>> import ansys.aedt.core as pyaedt
+        >>> app = pyaedt.Circuit()
+        >>> source = VoltageSinSource(app, name="V1")
+        >>> source.ac_magnitude
+
+        """
+        return self._props["ACMAG"]
+
+    @ac_magnitude.setter
+    def ac_magnitude(self, value: str) -> None:
+        self._props["ACMAG"] = value
+        self._set_excitation_prop("ACMAG", value)
+
+    @property
+    def ac_phase(self) -> str:
+        """AC phase value.
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import VoltageSinSource
+        >>> import ansys.aedt.core as pyaedt
+        >>> app = pyaedt.Circuit()
+        >>> source = VoltageSinSource(app, name="V1")
+        >>> source.ac_phase
+
+        """
+        return self._props["ACPHASE"]
+
+    @ac_phase.setter
+    def ac_phase(self, value: str) -> None:
+        self._props["ACPHASE"] = value
+        self._set_excitation_prop("ACPHASE", value)
+
+    @property
+    def dc_magnitude(self) -> str:
+        """DC voltage value.
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import VoltageSinSource
+        >>> import ansys.aedt.core as pyaedt
+        >>> app = pyaedt.Circuit()
+        >>> source = VoltageSinSource(app, name="V1")
+        >>> source.dc_magnitude
+
+        """
+        return self._props["DC"]
+
+    @dc_magnitude.setter
+    def dc_magnitude(self, value: str) -> None:
+        self._props["DC"] = value
+        self._set_excitation_prop("DC", value)
+
+    @property
+    def voltage_amplitude(self) -> str:
+        """Voltage amplitude.
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import VoltageSinSource
+        >>> import ansys.aedt.core as pyaedt
+        >>> app = pyaedt.Circuit()
+        >>> source = VoltageSinSource(app, name="V1")
+        >>> source.voltage_amplitude
+
+        """
+        return self._props["VA"]
+
+    @voltage_amplitude.setter
+    def voltage_amplitude(self, value: str) -> None:
+        self._props["VA"] = value
+        self._set_excitation_prop("VA", value)
+
+    @property
+    def voltage_offset(self) -> str:
+        """Voltage offset from zero watts.
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import VoltageSinSource
+        >>> import ansys.aedt.core as pyaedt
+        >>> app = pyaedt.Circuit()
+        >>> source = VoltageSinSource(app, name="V1")
+        >>> source.voltage_offset
+
+        """
+        return self._props["VO"]
+
+    @voltage_offset.setter
+    def voltage_offset(self, value: str) -> None:
+        self._props["VO"] = value
+        self._set_excitation_prop("VO", value)
+
+    @property
+    def frequency(self) -> str:
+        """Frequency.
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import VoltageSinSource
+        >>> import ansys.aedt.core as pyaedt
+        >>> app = pyaedt.Circuit()
+        >>> source = VoltageSinSource(app, name="V1")
+        >>> source.frequency
+
+        """
+        return self._props["FREQ"]
+
+    @frequency.setter
+    def frequency(self, value: str) -> None:
+        self._props["FREQ"] = value
+        self._set_excitation_prop("FREQ", value)
+
+    @property
+    def delay(self) -> str:
+        """Delay to start of sine wave.
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import VoltageSinSource
+        >>> import ansys.aedt.core as pyaedt
+        >>> app = pyaedt.Circuit()
+        >>> source = VoltageSinSource(app, name="V1")
+        >>> source.delay
+
+        """
+        return self._props["TD"]
+
+    @delay.setter
+    def delay(self, value: str) -> None:
+        self._props["TD"] = value
+        self._set_excitation_prop("TD", value)
+
+    @property
+    def damping_factor(self) -> str:
+        """Damping factor.
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import VoltageSinSource
+        >>> import ansys.aedt.core as pyaedt
+        >>> app = pyaedt.Circuit()
+        >>> source = VoltageSinSource(app, name="V1")
+        >>> source.damping_factor
+
+        """
+        return self._props["ALPHA"]
+
+    @damping_factor.setter
+    def damping_factor(self, value: str) -> None:
+        self._props["ALPHA"] = value
+        self._set_excitation_prop("ALPHA", value)
+
+    @property
+    def phase_delay(self) -> str:
+        """Phase delay.
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import VoltageSinSource
+        >>> import ansys.aedt.core as pyaedt
+        >>> app = pyaedt.Circuit()
+        >>> source = VoltageSinSource(app, name="V1")
+        >>> source.phase_delay
+
+        """
+        return self._props["THETA"]
+
+    @phase_delay.setter
+    def phase_delay(self, value: str) -> None:
+        self._props["THETA"] = value
+        self._set_excitation_prop("THETA", value)
+
+    @property
+    def tone(self) -> str:
+        """Frequency to use for harmonic balance.
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import VoltageSinSource
+        >>> import ansys.aedt.core as pyaedt
+        >>> app = pyaedt.Circuit()
+        >>> source = VoltageSinSource(app, name="V1")
+        >>> source.tone
+
+        """
+        return self._props["TONE"]
+
+    @tone.setter
+    def tone(self, value: str) -> None:
+        self._props["TONE"] = value
+        self._set_excitation_prop("TONE", value)
+
+
+class CurrentSinSource(Sources):
+    """Current Sinusoidal Class.
+
+    Examples
+    --------
+    >>> from ansys.aedt.core.modules.boundary.circuit_boundary import CurrentSinSource
+    >>> import ansys.aedt.core as pyaedt
+    >>> app = pyaedt.Circuit()
+    >>> source = CurrentSinSource(app, name="I1")
+
+    """
+
+    def __init__(self, app, name: str, source_type=None) -> None:
+        Sources.__init__(self, app, name, source_type)
+
+    @property
+    def _child(self):
+        excitations_oo = self._app.get_oo_object(self._app.odesign, "Excitations")
+        return self._app.get_oo_object(excitations_oo, self.name)
+
+    @property
+    def ac_magnitude(self):
+        """AC magnitude value.
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import CurrentSinSource
+        >>> import ansys.aedt.core as pyaedt
+        >>> app = pyaedt.Circuit()
+        >>> source = CurrentSinSource(app, name="I1")
+        >>> source.ac_magnitude
+
+        """
+        return self._props["ACMAG"]
+
+    @ac_magnitude.setter
+    def ac_magnitude(self, value: str) -> None:
+        self._props["ACMAG"] = value
+        self._set_excitation_prop("ACMAG", value)
+
+    @property
+    def ac_phase(self) -> str:
+        """AC phase value.
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import CurrentSinSource
+        >>> import ansys.aedt.core as pyaedt
+        >>> app = pyaedt.Circuit()
+        >>> source = CurrentSinSource(app, name="I1")
+        >>> source.ac_phase
+
+        """
+        return self._props["ACPHASE"]
+
+    @ac_phase.setter
+    def ac_phase(self, value: str) -> None:
+        self._props["ACPHASE"] = value
+        self._set_excitation_prop("ACPHASE", value)
+
+    @property
+    def dc_magnitude(self) -> str:
+        """DC current value.
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import CurrentSinSource
+        >>> import ansys.aedt.core as pyaedt
+        >>> app = pyaedt.Circuit()
+        >>> source = CurrentSinSource(app, name="I1")
+        >>> source.dc_magnitude
+
+        """
+        return self._props["DC"]
+
+    @dc_magnitude.setter
+    def dc_magnitude(self, value: str) -> None:
+        self._props["DC"] = value
+        self._set_excitation_prop("DC", value)
+
+    @property
+    def current_amplitude(self) -> str:
+        """Current amplitude.
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import CurrentSinSource
+        >>> import ansys.aedt.core as pyaedt
+        >>> app = pyaedt.Circuit()
+        >>> source = CurrentSinSource(app, name="I1")
+        >>> source.current_amplitude
+
+        """
+        return self._props["VA"]
+
+    @current_amplitude.setter
+    def current_amplitude(self, value: str) -> None:
+        self._props["VA"] = value
+        self._set_excitation_prop("VA", value)
+
+    @property
+    def current_offset(self) -> str:
+        """Current offset.
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import CurrentSinSource
+        >>> import ansys.aedt.core as pyaedt
+        >>> app = pyaedt.Circuit()
+        >>> source = CurrentSinSource(app, name="I1")
+        >>> source.current_offset
+
+        """
+        return self._props["VO"]
+
+    @current_offset.setter
+    def current_offset(self, value: str) -> None:
+        self._props["VO"] = value
+        self._set_excitation_prop("VO", value)
+
+    @property
+    def frequency(self) -> str:
+        """Frequency.
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import CurrentSinSource
+        >>> import ansys.aedt.core as pyaedt
+        >>> app = pyaedt.Circuit()
+        >>> source = CurrentSinSource(app, name="I1")
+        >>> source.frequency
+
+        """
+        return self._props["FREQ"]
+
+    @frequency.setter
+    def frequency(self, value: str) -> None:
+        self._props["FREQ"] = value
+        self._set_excitation_prop("FREQ", value)
+
+    @property
+    def delay(self) -> str:
+        """Delay to start of sine wave.
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import CurrentSinSource
+        >>> import ansys.aedt.core as pyaedt
+        >>> app = pyaedt.Circuit()
+        >>> source = CurrentSinSource(app, name="I1")
+        >>> source.delay
+
+        """
+        return self._props["TD"]
+
+    @delay.setter
+    def delay(self, value: str) -> None:
+        self._props["TD"] = value
+        self._set_excitation_prop("TD", value)
+
+    @property
+    def damping_factor(self) -> str:
+        """Damping factor.
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import CurrentSinSource
+        >>> import ansys.aedt.core as pyaedt
+        >>> app = pyaedt.Circuit()
+        >>> source = CurrentSinSource(app, name="I1")
+        >>> source.damping_factor
+
+        """
+        return self._props["ALPHA"]
+
+    @damping_factor.setter
+    def damping_factor(self, value: str) -> None:
+        self._props["ALPHA"] = value
+        self._set_excitation_prop("ALPHA", value)
+
+    @property
+    def phase_delay(self) -> str:
+        """Phase delay.
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import CurrentSinSource
+        >>> import ansys.aedt.core as pyaedt
+        >>> app = pyaedt.Circuit()
+        >>> source = CurrentSinSource(app, name="I1")
+        >>> source.phase_delay
+
+        """
+        return self._props["THETA"]
+
+    @phase_delay.setter
+    def phase_delay(self, value: str) -> None:
+        self._props["THETA"] = value
+        self._set_excitation_prop("THETA", value)
+
+    @property
+    def multiplier(self) -> str:
+        """Multiplier for simulating multiple parallel current sources.
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import CurrentSinSource
+        >>> import ansys.aedt.core as pyaedt
+        >>> app = pyaedt.Circuit()
+        >>> source = CurrentSinSource(app, name="I1")
+        >>> source.multiplier
+
+        """
+        return self._props["M"]
+
+    @multiplier.setter
+    def multiplier(self, value: str) -> None:
+        self._props["M"] = value
+        self._set_excitation_prop("M", value)
+
+    @property
+    def tone(self) -> str:
+        """Frequency to use for harmonic balance.
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.boundary.circuit_boundary import CurrentSinSource
+        >>> import ansys.aedt.core as pyaedt
+        >>> app = pyaedt.Circuit()
+        >>> source = CurrentSinSource(app, name="I1")
+        >>> source.tone
+
+        """
+        return self._props["TONE"]
+
+    @tone.setter
+    def tone(self, value: str) -> None:
+        self._props["TONE"] = value
+        self._set_excitation_prop("TONE", value)

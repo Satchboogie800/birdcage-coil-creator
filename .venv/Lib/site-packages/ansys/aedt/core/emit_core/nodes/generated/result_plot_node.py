@@ -1,0 +1,662 @@
+# -*- coding: utf-8 -*-
+#
+# Copyright (C) 2021 - 2026 Synopsys, Inc. and ANSYS, Inc. All rights reserved.
+# SPDX-License-Identifier: MIT
+#
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+from enum import Enum
+
+from ansys.aedt.core.emit_core.nodes.emit_node import EmitNode
+from ansys.aedt.core.internal.checks import min_aedt_version
+
+
+class ResultPlotNode(EmitNode):
+    """Provide result plot node."""
+
+    def __init__(self, emit_obj, result_id, node_id) -> None:
+        EmitNode.__init__(self, emit_obj, result_id, node_id)
+        self._is_component = False
+
+    @property
+    @min_aedt_version("2025.2")
+    def node_type(self) -> str:
+        """The type of this emit node.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> rev = app.results.analyze()
+        >>> plot = rev.get_result_plot_node()
+        >>> plot.node_type
+
+        """
+        return self._node_type
+
+    @property
+    @min_aedt_version("2025.2")
+    def title(self) -> str:
+        """Enter title at the top of the plot, room will be made for it.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> rev = app.results.analyze()
+        >>> plot = rev.get_result_plot_node()
+        >>> plot.title = "example_value"
+
+        """
+        val = self._get_property("Title")
+        return val
+
+    @title.setter
+    @min_aedt_version("2025.2")
+    def title(self, value: str) -> None:
+        self._set_property("Title", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def title_font(self) -> str:
+        """Configure title font family, typeface, and size.
+
+        Value formatted like 'Sans Serif,10,-1,5,50,0,0,0,0,0'.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> rev = app.results.analyze()
+        >>> plot = rev.get_result_plot_node()
+        >>> plot.title_font = "Sans Serif,14,-1,5,75,0,0,0,0,0"
+
+        """
+        val = self._get_property("Title Font")
+        return val
+
+    @title_font.setter
+    @min_aedt_version("2025.2")
+    def title_font(self, value: str) -> None:
+        self._set_property("Title Font", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def show_legend(self) -> bool:
+        """Toggle (on/off) display of plot legend.
+
+        Value should be 'true' or 'false'.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> rev = app.results.analyze()
+        >>> plot = rev.get_result_plot_node()
+        >>> plot.show_legend = True
+
+        """
+        val = self._get_property("Show Legend")
+        return val == "true"
+
+    @show_legend.setter
+    @min_aedt_version("2025.2")
+    def show_legend(self, value: bool) -> None:
+        self._set_property("Show Legend", f"{str(value).lower()}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def legend_font(self) -> str:
+        """Configure legend font family, typeface, and size.
+
+        Value formatted like 'Sans Serif,10,-1,5,50,0,0,0,0,0'.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> rev = app.results.analyze()
+        >>> plot = rev.get_result_plot_node()
+        >>> plot.show_legend = True
+        >>> plot.legend_font = "Sans Serif,10,-1,5,50,0,0,0,0,0"
+
+        """
+        val = self._get_property("Legend Font")
+        return val
+
+    @legend_font.setter
+    @min_aedt_version("2025.2")
+    def legend_font(self, value: str) -> None:
+        self._set_property("Legend Font", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def show_emi_thresholds(self) -> bool:
+        """Toggles on/off visibility of the EMI Thresholds.
+
+        Value should be 'true' or 'false'.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> rev = app.results.analyze()
+        >>> plot = rev.get_result_plot_node()
+        >>> plot.show_emi_thresholds = True
+
+        """
+        val = self._get_property("Show EMI Thresholds")
+        return val == "true"
+
+    @show_emi_thresholds.setter
+    @min_aedt_version("2025.2")
+    def show_emi_thresholds(self, value: bool) -> None:
+        self._set_property("Show EMI Thresholds", f"{str(value).lower()}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def lock_axes(self) -> bool:
+        """Lock Axes.
+
+        Allow or prevent changing of axes when displayed plot traces are
+        updated.
+
+        Value should be 'true' or 'false'.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> rev = app.results.analyze()
+        >>> plot = rev.get_result_plot_node()
+        >>> plot.lock_axes = False
+
+        """
+        val = self._get_property("Lock Axes")
+        return val == "true"
+
+    @lock_axes.setter
+    @min_aedt_version("2025.2")
+    def lock_axes(self, value: bool) -> None:
+        self._set_property("Lock Axes", f"{str(value).lower()}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def x_axis_min(self) -> float:
+        """Set lower extent of horizontal axis.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> rev = app.results.analyze()
+        >>> plot = rev.get_result_plot_node()
+        >>> plot.x_axis_min = 0
+
+        """
+        val = self._get_property("X-axis Min")
+        return float(val)
+
+    @x_axis_min.setter
+    @min_aedt_version("2025.2")
+    def x_axis_min(self, value: float) -> None:
+        self._set_property("X-axis Min", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def x_axis_max(self) -> float:
+        """Set upper extent of horizontal axis.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> rev = app.results.analyze()
+        >>> plot = rev.get_result_plot_node()
+        >>> plot.x_axis_max = 0
+
+        """
+        val = self._get_property("X-axis Max")
+        return float(val)
+
+    @x_axis_max.setter
+    @min_aedt_version("2025.2")
+    def x_axis_max(self, value: float) -> None:
+        self._set_property("X-axis Max", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def y_axis_min(self) -> float:
+        """Set lower extent of vertical axis.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> rev = app.results.analyze()
+        >>> plot = rev.get_result_plot_node()
+        >>> plot.y_axis_min = 0
+
+        """
+        val = self._get_property("Y-axis Min")
+        return float(val)
+
+    @y_axis_min.setter
+    @min_aedt_version("2025.2")
+    def y_axis_min(self, value: float) -> None:
+        self._set_property("Y-axis Min", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def y_axis_max(self) -> float:
+        """Set upper extent of vertical axis.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> rev = app.results.analyze()
+        >>> plot = rev.get_result_plot_node()
+        >>> plot.y_axis_max = 0
+
+        """
+        val = self._get_property("Y-axis Max")
+        return float(val)
+
+    @y_axis_max.setter
+    @min_aedt_version("2025.2")
+    def y_axis_max(self, value: float) -> None:
+        self._set_property("Y-axis Max", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def max_major_ticks_x(self) -> int:
+        """Max Major Ticks X.
+
+        Set maximum number of major tick-mark intervals along horizontal axis.
+
+        Value should be between 1 and 30.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> rev = app.results.analyze()
+        >>> plot = rev.get_result_plot_node()
+        >>> plot.max_major_ticks_x = 8
+
+        """
+        val = self._get_property("Max Major Ticks X")
+        return int(val)
+
+    @max_major_ticks_x.setter
+    @min_aedt_version("2025.2")
+    def max_major_ticks_x(self, value: int) -> None:
+        self._set_property("Max Major Ticks X", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def max_minor_ticks_x(self) -> int:
+        """Max Minor Ticks X.
+
+        Set maximum number of minor tick-mark intervals between major ticks
+        along horizontal axis.
+
+        Value should be between 0 and 100.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> rev = app.results.analyze()
+        >>> plot = rev.get_result_plot_node()
+        >>> plot.max_minor_ticks_x = 8
+
+        """
+        val = self._get_property("Max Minor Ticks X")
+        return int(val)
+
+    @max_minor_ticks_x.setter
+    @min_aedt_version("2025.2")
+    def max_minor_ticks_x(self, value: int) -> None:
+        self._set_property("Max Minor Ticks X", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def max_major_ticks_y(self) -> int:
+        """Max Major Ticks Y.
+
+        Set maximum number of major tick-mark intervals along vertical axis.
+
+        Value should be between 1 and 30.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> rev = app.results.analyze()
+        >>> plot = rev.get_result_plot_node()
+        >>> plot.max_major_ticks_y = 8
+
+        """
+        val = self._get_property("Max Major Ticks Y")
+        return int(val)
+
+    @max_major_ticks_y.setter
+    @min_aedt_version("2025.2")
+    def max_major_ticks_y(self, value: int) -> None:
+        self._set_property("Max Major Ticks Y", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def max_minor_ticks_y(self) -> int:
+        """Max Minor Ticks Y.
+
+        Set maximum number of minor tick-mark intervals between major ticks
+        along vertical axis.
+
+        Value should be between 0 and 100.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> rev = app.results.analyze()
+        >>> plot = rev.get_result_plot_node()
+        >>> plot.max_minor_ticks_y = 8
+
+        """
+        val = self._get_property("Max Minor Ticks Y")
+        return int(val)
+
+    @max_minor_ticks_y.setter
+    @min_aedt_version("2025.2")
+    def max_minor_ticks_y(self, value: int) -> None:
+        self._set_property("Max Minor Ticks Y", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def axis_label_font(self) -> str:
+        """Configure axis text labels font family, typeface, and size.
+
+        Value formatted like 'Sans Serif,10,-1,5,50,0,0,0,0,0'.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> rev = app.results.analyze()
+        >>> plot = rev.get_result_plot_node()
+        >>> plot.axis_label_font = "Sans Serif,12,-1,5,75,0,0,0,0,0"
+
+        """
+        val = self._get_property("Axis Label Font")
+        return val
+
+    @axis_label_font.setter
+    @min_aedt_version("2025.2")
+    def axis_label_font(self, value: str) -> None:
+        self._set_property("Axis Label Font", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def axis_tick_label_font(self) -> str:
+        """Configure axis tick numeric labels font family, typeface, and size.
+
+        Value formatted like 'Sans Serif,10,-1,5,50,0,0,0,0,0'.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> rev = app.results.analyze()
+        >>> plot = rev.get_result_plot_node()
+        >>> plot.axis_tick_label_font = "Sans Serif,10,-1,5,50,0,0,0,0,0"
+
+        """
+        val = self._get_property("Axis Tick Label Font")
+        return val
+
+    @axis_tick_label_font.setter
+    @min_aedt_version("2025.2")
+    def axis_tick_label_font(self, value: str) -> None:
+        self._set_property("Axis Tick Label Font", f"{value}")
+
+    class MajorGridLineStyleOption(Enum):
+        LINES = "Lines"
+        DOTTED = "Dotted"
+        DASHED = "Dashed"
+        DOT_DASH = "Dot-Dash"
+        DOT_DOT_DASH = "Dot-Dot-Dash"
+        NONE = "None"
+
+    @property
+    @min_aedt_version("2025.2")
+    def major_grid_line_style(self) -> MajorGridLineStyleOption:
+        """Select line style of major-tick grid lines.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> rev = app.results.analyze()
+        >>> plot = rev.get_result_plot_node()
+        >>> plot.major_grid_line_style = ResultPlotNode.MajorGridLineStyleOption.NONE
+
+        """
+        val = self._get_property("Major Grid Line Style")
+        try:
+            val = self.MajorGridLineStyleOption(val)
+        except ValueError:
+            val = self.MajorGridLineStyleOption[val.upper()]
+        return val
+
+    @major_grid_line_style.setter
+    @min_aedt_version("2025.2")
+    def major_grid_line_style(self, value: MajorGridLineStyleOption) -> None:
+        self._set_property("Major Grid Line Style", f"{value.value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def major_grid_color(self) -> str:
+        """Set color of major-tick grid lines.
+
+        Color should be in RGB form: #RRGGBB.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> rev = app.results.analyze()
+        >>> plot = rev.get_result_plot_node()
+        >>> plot.major_grid_color = "#808080"
+
+        """
+        val = self._get_property("Major Grid Color")
+        return val
+
+    @major_grid_color.setter
+    @min_aedt_version("2025.2")
+    def major_grid_color(self, value: str) -> None:
+        self._set_property("Major Grid Color", f"{value}")
+
+    class MinorGridLineStyleOption(Enum):
+        LINES = "Lines"
+        DOTTED = "Dotted"
+        DASHED = "Dashed"
+        DOT_DASH = "Dot-Dash"
+        DOT_DOT_DASH = "Dot-Dot-Dash"
+        NONE = "None"
+
+    @property
+    @min_aedt_version("2025.2")
+    def minor_grid_line_style(self) -> MinorGridLineStyleOption:
+        """Select line style of minor-tick grid lines.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> rev = app.results.analyze()
+        >>> plot = rev.get_result_plot_node()
+        >>> plot.minor_grid_line_style = ResultPlotNode.MinorGridLineStyleOption.NONE
+
+        """
+        val = self._get_property("Minor Grid Line Style")
+        try:
+            val = self.MinorGridLineStyleOption(val)
+        except ValueError:
+            val = self.MinorGridLineStyleOption[val.upper()]
+        return val
+
+    @minor_grid_line_style.setter
+    @min_aedt_version("2025.2")
+    def minor_grid_line_style(self, value: MinorGridLineStyleOption) -> None:
+        self._set_property("Minor Grid Line Style", f"{value.value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def minor_grid_color(self) -> str:
+        """Set color of minor-tick grid lines.
+
+        Color should be in RGB form: #RRGGBB.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> rev = app.results.analyze()
+        >>> plot = rev.get_result_plot_node()
+        >>> plot.minor_grid_color = "#808080"
+
+        """
+        val = self._get_property("Minor Grid Color")
+        return val
+
+    @minor_grid_color.setter
+    @min_aedt_version("2025.2")
+    def minor_grid_color(self, value: str) -> None:
+        self._set_property("Minor Grid Color", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def background_color(self) -> str:
+        """Set background color of entire plot.
+
+        Color should be in RGB form: #RRGGBB.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> rev = app.results.analyze()
+        >>> plot = rev.get_result_plot_node()
+        >>> plot.background_color = "#FFFFFF"
+
+        """
+        val = self._get_property("Background Color")
+        return val
+
+    @background_color.setter
+    @min_aedt_version("2025.2")
+    def background_color(self, value: str) -> None:
+        self._set_property("Background Color", f"{value}")
+
+    class BBPowerforPlotsUnitOption(Enum):
+        HERTZ = "hertz"
+        KILOHERTZ = "kilohertz"
+        MEGAHERTZ = "megahertz"
+        GIGAHERTZ = "gigahertz"
+
+    @property
+    @min_aedt_version("2025.2")
+    def bb_power_for_plots_unit(self) -> BBPowerforPlotsUnitOption:
+        """Units to use for plotting broadband power densities.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> rev = app.results.analyze()
+        >>> plot = rev.get_result_plot_node()
+        >>> plot.bb_power_for_plots_unit = ResultPlotNode.BBPowerforPlotsUnitOption.HERTZ
+
+        """
+        val = self._get_property("BB Power for Plots Unit")
+        try:
+            val = self.BBPowerforPlotsUnitOption(val)
+        except ValueError:
+            val = self.BBPowerforPlotsUnitOption[val.upper()]
+        return val
+
+    @bb_power_for_plots_unit.setter
+    @min_aedt_version("2025.2")
+    def bb_power_for_plots_unit(self, value: BBPowerforPlotsUnitOption) -> None:
+        self._set_property("BB Power for Plots Unit", f"{value.value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def bb_power_bandwidth(self) -> float:
+        """Resolution bandwidth for broadband power.
+
+        Value should be between 1.0 and 100e9.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> rev = app.results.analyze()
+        >>> plot = rev.get_result_plot_node()
+        >>> plot.bb_power_bandwidth = 1.0
+
+        """
+        val = self._get_property("BB Power Bandwidth")
+        val = self._convert_from_internal_units(float(val), "")
+        return float(val)
+
+    @bb_power_bandwidth.setter
+    @min_aedt_version("2025.2")
+    def bb_power_bandwidth(self, value: float | str) -> None:
+        value = self._convert_to_internal_units(value, "")
+        self._set_property("BB Power Bandwidth", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def log_scale(self) -> bool:
+        """Toggles on/off using a log scale for the X-Axis.
+
+        Value should be 'true' or 'false'.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> rev = app.results.analyze()
+        >>> plot = rev.get_result_plot_node()
+        >>> plot.log_scale = False
+
+        """
+        val = self._get_property("Log Scale")
+        return val == "true"
+
+    @log_scale.setter
+    @min_aedt_version("2025.2")
+    def log_scale(self, value: bool) -> None:
+        self._set_property("Log Scale", f"{str(value).lower()}")

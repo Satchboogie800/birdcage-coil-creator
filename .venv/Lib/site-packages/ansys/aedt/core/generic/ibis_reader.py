@@ -1,0 +1,2493 @@
+# -*- coding: utf-8 -*-
+#
+# Copyright (C) 2021 - 2026 Synopsys, Inc. and ANSYS, Inc. All rights reserved.
+# SPDX-License-Identifier: MIT
+#
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+import json
+from pathlib import Path
+import re
+import traceback
+from typing import TYPE_CHECKING
+
+from ansys.aedt.core.aedt_logger import pyaedt_logger as logger
+from ansys.aedt.core.base import PyAedtBase
+from ansys.aedt.core.generic.file_utils import check_and_download_file
+from ansys.aedt.core.generic.file_utils import check_if_path_exists
+from ansys.aedt.core.generic.file_utils import get_filename_without_extension
+from ansys.aedt.core.generic.file_utils import open_file
+from ansys.aedt.core.generic.general_methods import deprecated_property
+
+if TYPE_CHECKING:
+    from ansys.aedt.core.modeler.circuits.object_3d_circuit import CircuitComponent
+
+
+class Component(PyAedtBase):
+    """Component extracted from ibis model.
+
+    Examples
+    --------
+    >>> from pathlib import Path
+    >>> from ansys.aedt.core import Circuit
+    >>> from ansys.aedt.core.generic.ibis_reader import IbisReader
+    >>> circuit = Circuit()
+    >>> reader = IbisReader(Path(r"C:\\IBIS\\ansys_ddr4.ibs"), circuit)
+    >>> reader.ibis_model.components["ANSYS_DDR4_v001"]
+
+    """
+
+    def __init__(self) -> None:
+        self._name: str | None = None
+        self._manufacturer: str | None = None
+        self._pins: dict = {}
+        self._differential_pins = {}
+        # NOTE: This attributes have been added because the original implementation
+        # was doing dynamic attribute assignment with L_pkg, R_pkg, and C_pkg.
+        self.__r_pkg: str | None = None
+        self.__l_pkg: str | None = None
+        self.__c_pkg: str | None = None
+
+    @property
+    def name(self) -> str | None:
+        """Name of the component.
+
+        Returns
+        -------
+        str or None
+            Name of the component, or ``None`` if not set.
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> ibis_file = Path(path_to_ibis_files) / "u26a_800_modified.ibs"
+        >>> ibis = ibis_reader.IbisReader(ibis_file, circuit)
+        >>> ibis.components["MT47H64M4BP-3_25"].name
+
+        """
+        return self._name
+
+    @name.setter
+    def name(self, value: str | None) -> None:
+        self._name = value
+
+    @property
+    def manufacturer(self) -> str | None:
+        """Manufacturer of the component.
+
+        Returns
+        -------
+        str or None
+            Manufacturer of the component, or ``None`` if not set.
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> ibis_file = Path(path_to_ibis_files) / "u26a_800_modified.ibs"
+        >>> ibis = ibis_reader.IbisReader(ibis_file, circuit)
+        >>> ibis.components["MT47H64M4BP-3_25"].manufacturer
+
+        """
+        return self._manufacturer
+
+    @manufacturer.setter
+    def manufacturer(self, value: str | None) -> None:
+        self._manufacturer = value
+
+    @property
+    def pins(self) -> dict:
+        """Pins of the component.
+
+        Returns
+        -------
+        dict
+            Dictionary of :class:`ansys.aedt.core.generic.ibis_reader.Pin` objects keyed by short name.
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> ibis_file = Path(path_to_ibis_files) / "u26a_800_modified.ibs"
+        >>> ibis = ibis_reader.IbisReader(ibis_file, circuit)
+        >>> pins = ibis.components["MT47H64M4BP-3_25"].pins
+
+        """
+        return self._pins
+
+    @pins.setter
+    def pins(self, value: dict) -> None:
+        self._pins = value
+
+    @property
+    def differential_pins(self) -> dict:
+        """Differential pins of the component.
+
+        Returns
+        -------
+        dict
+            Dictionary of :class:`ansys.aedt.core.generic.ibis_reader.DifferentialPin` objects keyed by short name.
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> ibis_file = Path(path_to_ibis_files) / "u26a_800_modified.ibs"
+        >>> ibis = ibis_reader.IbisReader(ibis_file, circuit)
+        >>> pins = ibis.components["MT47H64M4BP-3_25"].differential_pins
+
+        """
+        return self._differential_pins
+
+    @differential_pins.setter
+    def differential_pins(self, value: dict) -> None:
+        self._differential_pins = value
+
+    @property
+    def r_pkg(self) -> str | None:
+        """Package resistance extracted from the ``R_pkg`` keyword.
+
+        Returns
+        -------
+        str or None
+            Package resistance, or ``None`` if not set.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.ibis_reader import Component
+        >>> component = Component()
+        >>> component.r_pkg = "70.0m"
+        >>> component.r_pkg
+        '70.0m'
+
+        """
+        return self.__r_pkg
+
+    @r_pkg.setter
+    def r_pkg(self, value: str | None) -> None:
+        self.__r_pkg = value
+
+    @property
+    def l_pkg(self) -> str | None:
+        """Package inductance extracted from the ``L_pkg`` keyword.
+
+        Returns
+        -------
+        str or None
+            Package inductance, or ``None`` if not set.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.ibis_reader import Component
+        >>> component = Component()
+        >>> component.l_pkg = "2.21nH"
+        >>> component.l_pkg
+        '2.21nH'
+
+        """
+        return self.__l_pkg
+
+    @l_pkg.setter
+    def l_pkg(self, value: str | None) -> None:
+        self.__l_pkg = value
+
+    @property
+    def c_pkg(self) -> str | None:
+        """Package capacitance extracted from the ``C_pkg`` keyword.
+
+        Returns
+        -------
+        str or None
+            Package capacitance, or ``None`` if not set.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.ibis_reader import Component
+        >>> component = Component()
+        >>> component.c_pkg = "0.30pF"
+        >>> component.c_pkg
+        '0.30pF'
+
+        """
+        return self.__c_pkg
+
+    @c_pkg.setter
+    def c_pkg(self, value: str | None) -> None:
+        self.__c_pkg = value
+
+    # NOTE: The following properties are deprecated and kept for backward compatibility.
+
+    @property
+    @deprecated_property(reason="Use r_pkg instead.")
+    def R_pkg(self) -> str | None:  # noqa: N802
+        return self.r_pkg
+
+    @R_pkg.setter
+    @deprecated_property(reason="Use r_pkg instead.")
+    def R_pkg(self, value: str | None) -> None:  # noqa: N802
+        self.r_pkg = value
+
+    @property
+    @deprecated_property(reason="Use l_pkg instead.")
+    def L_pkg(self) -> str | None:  # noqa: N802
+        return self.l_pkg
+
+    @L_pkg.setter
+    @deprecated_property(reason="Use l_pkg instead.")
+    def L_pkg(self, value: str | None) -> None:  # noqa: N802
+        self.l_pkg = value
+
+    @property
+    @deprecated_property(reason="Use c_pkg instead.")
+    def C_pkg(self) -> str | None:  # noqa: N802
+        return self.c_pkg
+
+    @C_pkg.setter
+    @deprecated_property(reason="Use c_pkg instead.")
+    def C_pkg(self, value: str | None) -> None:  # noqa: N802
+        self.c_pkg = value
+
+
+class Pin(PyAedtBase):
+    """Pin from a component with all its data feature.
+
+    Parameters
+    ----------
+    name : str
+        Name of the pin.
+    circuit : class:`ansys.aedt.core.circuit.Circuit`
+        Circuit in which the pin will be added to.
+
+    Examples
+    --------
+    >>> from pathlib import Path
+    >>> from ansys.aedt.core import Circuit
+    >>> from ansys.aedt.core.generic.ibis_reader import IbisReader
+    >>> circuit = Circuit()
+    >>> reader = IbisReader(Path(r"C:\\IBIS\\ansys_ddr4.ibs"), circuit)
+    >>> reader.ibis_model.components["ANSYS_DDR4_v001"].pins["A1"]
+
+    """
+
+    def __init__(self, name: str, buffername, app) -> None:
+        self._name = name
+        self._buffer_name = buffername
+        self._app = app
+        self._circuit = app.circuit
+        self._short_name = None
+        self._signal = None
+        self._model = None
+        self._r_value = None
+        self._l_value = None
+        self._c_value = None
+        self._is_differential = False
+
+    @property
+    def is_differential(self) -> bool:
+        """Flag indicating if the pin is differential.
+
+        Returns
+        -------
+        bool
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> from ansys.aedt.core import Circuit
+        >>> from ansys.aedt.core.generic.ibis_reader import IbisReader
+        >>> circuit = Circuit()
+        >>> reader = IbisReader(Path(r"C:\\IBIS\\ansys_ddr4.ibs"), circuit)
+        >>> reader.ibis_model.components["ANSYS_DDR4_v001"].pins["A1"].is_differential
+
+        """
+        return self._is_differential
+
+    @is_differential.setter
+    def is_differential(self, val: bool) -> None:
+        self._is_differential = val
+
+    @property
+    def name(self) -> str:
+        """Full name of the pin including the component name and the ibis filename.
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> ibis_file = Path(path_to_ibis_files) / "u26a_800_modified.ibs"
+        >>> ibis = ibis_reader.IbisReader(ibis_file, circuit)
+        >>> ibis.components["MT47H64M4BP-3_25"].pins["A1_MT47H64M4BP-3_25_u26a_800"].name
+
+        """
+        return self._name
+
+    @property
+    def buffer_name(self) -> str:
+        """Full name of the buffer including the component name and the ibis filename.
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> from ansys.aedt.core import Circuit
+        >>> from ansys.aedt.core.generic.ibis_reader import IbisReader
+        >>> circuit = Circuit()
+        >>> reader = IbisReader(Path(r"C:\\IBIS\\ansys_ddr4.ibs"), circuit)
+        >>> reader.ibis_model.components["ANSYS_DDR4_v001"].pins["A1"].buffer_name
+
+        """
+        return self._buffer_name
+
+    @property
+    def short_name(self) -> str | None:
+        """Name of the pin without the name of the component.
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> ibis_file = Path(path_to_ibis_files) / "u26a_800_modified.ibs"
+        >>> ibis = ibis_reader.IbisReader(ibis_file, circuit)
+        >>> ibis.components["MT47H64M4BP-3_25"].pins["A1_MT47H64M4BP-3_25_u26a_800"].short_name
+
+        """
+        return self._short_name
+
+    @short_name.setter
+    def short_name(self, value: str | None) -> None:
+        self._short_name = value
+
+    @property
+    def signal(self) -> str | None:
+        """Signal of the pin.
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> ibis_file = Path(path_to_ibis_files) / "u26a_800_modified.ibs"
+        >>> ibis = ibis_reader.IbisReader(ibis_file, circuit)
+        >>> ibis.components["MT47H64M4BP-3_25"].pins["A1_MT47H64M4BP-3_25_u26a_800"].signal
+
+        """
+        return self._signal
+
+    @signal.setter
+    def signal(self, value: str | None) -> None:
+        self._signal = value
+
+    @property
+    def model(self) -> str | None:
+        """Model of the pin.
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> ibis_file = Path(path_to_ibis_files) / "u26a_800_modified.ibs"
+        >>> ibis = ibis_reader.IbisReader(ibis_file, circuit)
+        >>> ibis.components["MT47H64M4BP-3_25"].pins["A1_MT47H64M4BP-3_25_u26a_800"].signal
+
+        """
+        return self._model
+
+    @model.setter
+    def model(self, value: str | None) -> None:
+        self._model = value
+
+    @property
+    def r_value(self) -> str | None:
+        """Resistance value in ohms.
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> ibis_file = Path(path_to_ibis_files) / "u26a_800_modified.ibs"
+        >>> ibis = ibis_reader.IbisReader(ibis_file, circuit)
+        >>> ibis.components["MT47H64M4BP-3_25"].pins["A1_MT47H64M4BP-3_25_u26a_800"].r_value
+
+        """
+        return self._r_value
+
+    @r_value.setter
+    def r_value(self, value: str | None) -> None:
+        self._r_value = value
+
+    @property
+    def l_value(self) -> str | None:
+        """Inductance value in H.
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> ibis_file = Path(path_to_ibis_files) / "u26a_800_modified.ibs"
+        >>> ibis = ibis_reader.IbisReader(ibis_file, circuit)
+        >>> ibis.components["MT47H64M4BP-3_25"].pins["A1_MT47H64M4BP-3_25_u26a_800"].l_value
+
+        """
+        return self._l_value
+
+    @l_value.setter
+    def l_value(self, value: str | None) -> None:
+        self._l_value = value
+
+    @property
+    def c_value(self) -> str | None:
+        """Capacitance value in F.
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> ibis_file = Path(path_to_ibis_files) / "u26a_800_modified.ibs"
+        >>> ibis = ibis_reader.IbisReader(ibis_file, circuit)
+        >>> ibis.components["MT47H64M4BP-3_25"].pins["A1_MT47H64M4BP-3_25_u26a_800"].c_value
+
+        """
+        return self._c_value
+
+    @c_value.setter
+    def c_value(self, value: str | None) -> None:
+        self._c_value = value
+
+    def add(self) -> bool:
+        """Add a pin to the list of components in the Project Manager.
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> from ansys.aedt.core import Circuit
+        >>> from ansys.aedt.core.generic.ibis_reader import IbisReader
+        >>> circuit = Circuit()
+        >>> reader = IbisReader(Path(r"C:\\IBIS\\ansys_ddr4.ibs"), circuit)
+        >>> pin = reader.ibis_model.components["ANSYS_DDR4_v001"].pins["A1"]
+        >>> pin.add()
+
+        """
+        try:
+            available_names = self._circuit.modeler.schematic.ocomponent_manager.GetNames()
+            if self.name not in available_names:
+                self._app._app.import_model_in_aedt(pins=self.name)
+            return self._circuit.modeler.schematic.ocomponent_manager.AddSolverOnDemandModel(
+                self.buffer_name,
+                [
+                    "NAME:CosimDefinition",
+                    "CosimulatorType:=",
+                    7,
+                    "CosimDefName:=",
+                    "DefaultIBISNetlist",
+                    "IsDefinition:=",
+                    True,
+                    "Connect:=",
+                    True,
+                    "Data:=",
+                    [],
+                    "GRef:=",
+                    [],
+                ],
+            )
+        except Exception:
+            logger.error(f"Error adding {self.short_name} pin component.")
+            return False
+
+    def insert(self, x: float, y: float, angle: float = 0.0, page: int = 1) -> "CircuitComponent":
+        """Insert a pin at a defined location inside the graphical window.
+
+        Parameters
+        ----------
+        x : float
+            X position of the pin.
+        y : float
+            Y position of the pin.
+        angle : float, optional
+            Angle of the pin. The default value is ``"0.0"``.
+        page: int, optional
+            Schematic page number. The default value is ``1``.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modeler.circuits.object_3d_circuit.CircuitComponent`
+            Circuit Component Object.
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> from ansys.aedt.core import Circuit
+        >>> from ansys.aedt.core.generic.ibis_reader import IbisReader
+        >>> circuit = Circuit()
+        >>> reader = IbisReader(Path(r"C:\\IBIS\\ansys_ddr4.ibs"), circuit)
+        >>> pin = reader.ibis_model.components["ANSYS_DDR4_v001"].pins["A1"]
+        >>> pin.insert(0.0, 0.0)
+
+        """
+        if self.buffer_name not in self._circuit.modeler.schematic.ocomponent_manager.GetNames():
+            self._app._app.import_model_in_aedt(pins=self.name)
+        return self._circuit.modeler.schematic.create_component(
+            component_library=None,
+            component_name=self.buffer_name,
+            location=[x, y],
+            angle=angle,
+            page=page,
+        )
+
+
+class DifferentialPin(PyAedtBase):
+    """Provides the differential pin from a component with all its data feature.
+
+    Parameters
+    ----------
+    name : str
+        Name of the pin.
+    circuit : class:`ansys.aedt.core.circuit.Circuit`
+        Circuit to add the pin to.
+
+    Examples
+    --------
+    >>> from pathlib import Path
+    >>> from ansys.aedt.core import Circuit
+    >>> from ansys.aedt.core.generic.ibis_reader import IbisReader
+    >>> circuit = Circuit()
+    >>> reader = IbisReader(Path(r"C:\\IBIS\\ibis_ami_example_tx.ibs"), circuit)
+    >>> reader.ibis_model.components["example_device_tx"].differential_pins["14"]
+
+    """
+
+    def __init__(self, name: str, buffer_name, app) -> None:
+        self._buffer_name = buffer_name
+        self._app = app
+        self._circuit = app._circuit
+        self._name = name
+        self._tdelay_min = None
+        self._tdelay_max = None
+        self._tdelay_typ = None
+        self._vdiff = None
+        self._short_name = None
+        self._model = None
+        self._negative_pin = None
+
+    @property
+    def model(self) -> str | None:
+        """Model of the pin.
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> ibis_file = Path(path_to_ibis_files) / "u26a_800_modified.ibs"
+        >>> ibis = ibis_reader.IbisReader(ibis_file, circuit)
+        >>> ibis.components["MT47H64M4BP-3_25"].pins["A1_MT47H64M4BP-3_25_u26a_800"].signal
+
+        """
+        return self._model
+
+    @model.setter
+    def model(self, value: str | None) -> None:
+        self._model = value
+
+    @property
+    def buffer_name(self) -> str:
+        """Full name of the buffer including the component name and Ibis filename.
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> from ansys.aedt.core import Circuit
+        >>> from ansys.aedt.core.generic.ibis_reader import IbisReader
+        >>> circuit = Circuit()
+        >>> reader = IbisReader(Path(r"C:\\IBIS\\ibis_ami_example_tx.ibs"), circuit)
+        >>> diff_pin = reader.ibis_model.components["example_device_tx"].differential_pins["14"]
+        >>> diff_pin.buffer_name
+
+        """
+        return self._buffer_name
+
+    @property
+    def short_name(self) -> str | None:
+        """Short name of the buffer, which excludes the Ibis filename.
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> from ansys.aedt.core import Circuit
+        >>> from ansys.aedt.core.generic.ibis_reader import IbisReader
+        >>> circuit = Circuit()
+        >>> reader = IbisReader(Path(r"C:\\IBIS\\ibis_ami_example_tx.ibs"), circuit)
+        >>> diff_pin = reader.ibis_model.components["example_device_tx"].differential_pins["14"]
+        >>> diff_pin.short_name
+
+        """
+        return self._short_name
+
+    @property
+    def negative_pin(self) -> str | None:
+        """Negative pin.
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> from ansys.aedt.core import Circuit
+        >>> from ansys.aedt.core.generic.ibis_reader import IbisReader
+        >>> circuit = Circuit()
+        >>> reader = IbisReader(Path(r"C:\\IBIS\\ibis_ami_example_tx.ibs"), circuit)
+        >>> diff_pin = reader.ibis_model.components["example_device_tx"].differential_pins["14"]
+        >>> diff_pin.negative_pin
+
+        """
+        return self._negative_pin
+
+    @property
+    def vdiff(self) -> str | None:
+        """Differential voltage.
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> from ansys.aedt.core import Circuit
+        >>> from ansys.aedt.core.generic.ibis_reader import IbisReader
+        >>> circuit = Circuit()
+        >>> reader = IbisReader(Path(r"C:\\IBIS\\ibis_ami_example_tx.ibs"), circuit)
+        >>> diff_pin = reader.ibis_model.components["example_device_tx"].differential_pins["14"]
+        >>> diff_pin.vdiff
+
+        """
+        return self._vdiff
+
+    @property
+    def tdelay_min(self) -> str | None:
+        """Minimum delay.
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> from ansys.aedt.core import Circuit
+        >>> from ansys.aedt.core.generic.ibis_reader import IbisReader
+        >>> circuit = Circuit()
+        >>> reader = IbisReader(Path(r"C:\\IBIS\\ibis_ami_example_tx.ibs"), circuit)
+        >>> diff_pin = reader.ibis_model.components["example_device_tx"].differential_pins["14"]
+        >>> diff_pin.tdelay_min
+
+        """
+        return self._tdelay_min
+
+    @property
+    def tdelay_max(self) -> str | None:
+        """Maximum delay.
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> from ansys.aedt.core import Circuit
+        >>> from ansys.aedt.core.generic.ibis_reader import IbisReader
+        >>> circuit = Circuit()
+        >>> reader = IbisReader(Path(r"C:\\IBIS\\ibis_ami_example_tx.ibs"), circuit)
+        >>> diff_pin = reader.ibis_model.components["example_device_tx"].differential_pins["14"]
+        >>> diff_pin.tdelay_max
+
+        """
+        return self._tdelay_max
+
+    @property
+    def tdelay_typ(self) -> str | None:
+        """Typical delay.
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> from ansys.aedt.core import Circuit
+        >>> from ansys.aedt.core.generic.ibis_reader import IbisReader
+        >>> circuit = Circuit()
+        >>> reader = IbisReader(Path(r"C:\\IBIS\\ibis_ami_example_tx.ibs"), circuit)
+        >>> diff_pin = reader.ibis_model.components["example_device_tx"].differential_pins["14"]
+        >>> diff_pin.tdelay_typ
+
+        """
+        return self._tdelay_typ
+
+    @property
+    def name(self) -> str:
+        """Full name of the pin including the component name and Ibis filename.
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> ibis_file = Path(path_to_ibis_files) / "u26a_800_modified.ibs"
+        >>> ibis = ibis_reader.IbisReader(ibis_file, circuit)
+        >>> ibis.components["MT47H64M4BP-3_25"].pins["A1_MT47H64M4BP-3_25_u26a_800"].name
+
+        """
+        return self._name
+
+    def add(self) -> bool | str:
+        """Add a pin to the list of components in the Project Manager.
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> from ansys.aedt.core import Circuit
+        >>> from ansys.aedt.core.generic.ibis_reader import IbisReader
+        >>> circuit = Circuit()
+        >>> reader = IbisReader(Path(r"C:\\IBIS\\ibis_ami_example_tx.ibs"), circuit)
+        >>> diff_pin = reader.ibis_model.components["example_device_tx"].differential_pins["14"]
+        >>> diff_pin.add()
+
+        """
+        try:
+            available_names = self._circuit.modeler.schematic.ocomponent_manager.GetNames()
+            if self.name not in available_names:
+                self._app.import_model_in_aedt(pins=self.name)
+            return self._circuit.modeler.schematic.ocomponent_manager.AddSolverOnDemandModel(
+                self.buffer_name,
+                [
+                    "NAME:CosimDefinition",
+                    "CosimulatorType:=",
+                    7,
+                    "CosimDefName:=",
+                    "DefaultIBISNetlist",
+                    "IsDefinition:=",
+                    True,
+                    "Connect:=",
+                    True,
+                    "Data:=",
+                    [],
+                    "GRef:=",
+                    [],
+                ],
+            )
+        except Exception:
+            logger.error(f"Error adding {self.short_name} pin component.")
+            return False
+
+    def insert(self, x: float, y: float, angle: float = 0.0, page: int = 1) -> "CircuitComponent":
+        """Insert a pin at a defined location inside the graphical window.
+
+        Parameters
+        ----------
+        x : float
+            X position of the pin.
+        y : float
+            Y position of the pin.
+        angle : float, optional
+            Angle of the pin. The default value is ``"0.0"``.
+        page: int, optional
+            Schematic page number. The default value is ``1``.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modeler.circuits.object_3d_circuit.CircuitComponent`
+            Circuit Component Object.
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> from ansys.aedt.core import Circuit
+        >>> from ansys.aedt.core.generic.ibis_reader import IbisReader
+        >>> circuit = Circuit()
+        >>> reader = IbisReader(Path(r"C:\\IBIS\\ibis_ami_example_tx.ibs"), circuit)
+        >>> diff_pin = reader.ibis_model.components["example_device_tx"].differential_pins["14"]
+        >>> diff_pin.insert(0.0, 0.0)
+
+        """
+        if self.buffer_name not in self._circuit.modeler.schematic.ocomponent_manager.GetNames():
+            self._app.import_model_in_aedt(pins=self.name)
+        return self._circuit.modeler.schematic.create_component(
+            component_library=None,
+            component_name=self.buffer_name,
+            location=[x, y],
+            angle=angle,
+            page=page,
+        )
+
+
+class Buffer(PyAedtBase):
+    """Provide buffer."""
+
+    def __init__(self, ibis_name: str, short_name: str, app) -> None:
+        self._ibis_name = ibis_name
+        self._short_name = short_name
+        self._app = app
+        self._circuit = app._circuit
+
+    @property
+    def name(self) -> str:
+        """Full name of the buffer including the ibis filename.
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> from ansys.aedt.core import Circuit
+        >>> from ansys.aedt.core.generic.ibis_reader import IbisReader
+        >>> circuit = Circuit()
+        >>> reader = IbisReader(Path(r"C:\\IBIS\\ansys_ddr4.ibs"), circuit)
+        >>> reader.ibis_model.buffers["ansys_ddr4_dq_odt"].name
+
+        """
+        return f"{self.short_name}_{self._ibis_name}"
+
+    @property
+    def short_name(self) -> str:
+        """Short name of the buffer without the ibis filename included.
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> from ansys.aedt.core import Circuit
+        >>> from ansys.aedt.core.generic.ibis_reader import IbisReader
+        >>> circuit = Circuit()
+        >>> reader = IbisReader(Path(r"C:\\IBIS\\ansys_ddr4.ibs"), circuit)
+        >>> reader.ibis_model.buffers["ansys_ddr4_dq_odt"].short_name
+
+        """
+        return self._short_name
+
+    def add(self) -> None:
+        """Add a buffer to the list of components in the Project Manager.
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> from ansys.aedt.core import Circuit
+        >>> from ansys.aedt.core.generic.ibis_reader import IbisReader
+        >>> circuit = Circuit()
+        >>> reader = IbisReader(Path(r"C:\\IBIS\\ansys_ddr4.ibs"), circuit)
+        >>> reader.ibis_model.buffers["ansys_ddr4_dq_odt"].add()
+
+        """
+        available_names = self._circuit.modeler.schematic.ocomponent_manager.GetNames()
+        if self.name not in available_names:
+            self._app.import_model_in_aedt(buffers=self.name)
+        self._circuit.modeler.schematic.ocomponent_manager.AddSolverOnDemandModel(
+            self.name,
+            [
+                "NAME:CosimDefinition",
+                "CosimulatorType:=",
+                7,
+                "CosimDefName:=",
+                "DefaultIBISNetlist",
+                "IsDefinition:=",
+                True,
+                "Connect:=",
+                True,
+                "Data:=",
+                [],
+                "GRef:=",
+                [],
+            ],
+        )
+
+    def insert(self, x: float, y: float, angle: float = 0.0, page: int = 1) -> "CircuitComponent":
+        """Insert a buffer at a defined location inside the graphical window.
+
+        Parameters
+        ----------
+        x : float
+            X position of the buffer.
+        y : float
+            Y position of the buffer.
+        angle : float, optional
+            Angle of the buffer. The default value is ``"0.0"``.
+        page: int, optional
+            Schematic page number. The default value is ``1``.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modeler.circuits.object_3d_circuit.CircuitComponent`
+            Circuit Component Object.
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> from ansys.aedt.core import Circuit
+        >>> from ansys.aedt.core.generic.ibis_reader import IbisReader
+        >>> circuit = Circuit()
+        >>> reader = IbisReader(Path(r"C:\\IBIS\\example.ibs"), circuit)
+        >>> reader.parse_ibis_file()
+        >>> buffer = reader.ibis_model.buffers["DQ_FULL_800_example"]
+        >>> buffer.insert(0.0, 0.0)
+
+        """
+        all_names = self._circuit.modeler.schematic.ocomponent_manager.GetNames()
+        if self.name not in all_names:
+            self._app.import_model_in_aedt(buffers=self.name)
+        return self._circuit.modeler.schematic.create_component(
+            component_library=None, component_name=self.name, location=[x, y], angle=angle, page=page
+        )
+
+
+class ModelSelector(PyAedtBase):
+    """Provide model selector."""
+
+    def __init__(self) -> None:
+        self._model_selector_items = []
+        self._name = None
+
+    @property
+    def model_selector_items(self) -> list:
+        """Model selector items.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.ibis_reader import ModelSelector
+        >>> selector = ModelSelector()
+        >>> selector.model_selector_items = []
+        >>> selector.model_selector_items
+        []
+
+        """
+        return self._model_selector_items
+
+    @model_selector_items.setter
+    def model_selector_items(self, value: list) -> None:
+        self._model_selector_items = value
+
+    @property
+    def name(self) -> str | None:
+        """Name of the model selector.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.ibis_reader import ModelSelector
+        >>> selector = ModelSelector()
+        >>> selector.name = "MODEL_SEL"
+        >>> selector.name
+        'MODEL_SEL'
+
+        """
+        return self._name
+
+    @name.setter
+    def name(self, value: str | None) -> None:
+        self._name = value
+
+
+class ModelSelectorItem(PyAedtBase):
+    """Provide model selector item."""
+
+    def __init__(self) -> None:
+        self._description: str | None = None
+        self._name: str | None = None
+
+    @property
+    def description(self) -> str | None:
+        """Description of the item.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.ibis_reader import ModelSelectorItem
+        >>> item = ModelSelectorItem()
+        >>> item.description = "Typical corner"
+        >>> item.description
+        'Typical corner'
+
+        """
+        return self._description
+
+    @description.setter
+    def description(self, value: str | None) -> None:
+        self._description = value
+
+    @property
+    def name(self) -> str | None:
+        """Name of the item.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.ibis_reader import ModelSelectorItem
+        >>> item = ModelSelectorItem()
+        >>> item.name = "DQ_FULL_800"
+        >>> item.name
+        'DQ_FULL_800'
+
+        """
+        return self._name
+
+    @name.setter
+    def name(self, value: str | None) -> None:
+        self._name = value
+
+
+class Model(PyAedtBase):
+    """Provide model."""
+
+    def __init__(self) -> None:
+        self._description = []
+        self._name = None
+        self._clamp = None
+        self._enable = None
+        self._ami = None
+        self._c_comp = None
+        self._model_type = None
+
+    @property
+    def name(self) -> str | None:
+        """Name of the item.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.ibis_reader import Model
+        >>> model = Model()
+        >>> model.name = "DQ_FULL_800"
+        >>> model.name
+        'DQ_FULL_800'
+
+        """
+        return self._name
+
+    @name.setter
+    def name(self, value: str | None) -> None:
+        self._name = value
+
+    @property
+    def model_type(self) -> str | None:
+        """Type of the model.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.ibis_reader import Model
+        >>> model = Model()
+        >>> model.model_type = "Input"
+        >>> model.model_type
+        'Input'
+
+        """
+        return self._model_type
+
+    @model_type.setter
+    def model_type(self, value: str | None) -> None:
+        self._model_type = value
+
+    @property
+    def clamp(self) -> bool | None:
+        """Clamp.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.ibis_reader import Model
+        >>> model = Model()
+        >>> model.clamp = True
+        >>> model.clamp
+        True
+
+        """
+        return self._clamp
+
+    @clamp.setter
+    def clamp(self, value: bool | None) -> None:
+        self._clamp = value
+
+    @property
+    def enable(self) -> str | None:
+        """Is model enabled or not.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.ibis_reader import Model
+        >>> model = Model()
+        >>> model.enable = "Enabled"
+        >>> model.enable
+        'Enabled'
+
+        """
+        return self._enable
+
+    @enable.setter
+    def enable(self, value: str | None) -> None:
+        self._enable = value
+
+    @property
+    def ami(self) -> list | None:
+        """Is model enabled or not.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.ibis_reader import Model
+        >>> model = Model()
+        >>> model.ami = ["rx.ami"]
+        >>> model.ami
+        ['rx.ami']
+
+        """
+        return self._ami
+
+    @ami.setter
+    def ami(self, value: list | None) -> None:
+        self._ami = value
+
+    @property
+    def c_comp(self) -> list | None:
+        """Is model enabled or not.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.ibis_reader import Model
+        >>> model = Model()
+        >>> model.c_comp = ["1pF", "1.1pF", "1.2pF"]
+        >>> model.c_comp
+        ['1pF', '1.1pF', '1.2pF']
+
+        """
+        return self._c_comp
+
+    @c_comp.setter
+    def c_comp(self, value: list | None) -> None:
+        self._c_comp = value
+
+
+class Ibis(PyAedtBase):
+    """Ibis model with all data extracted: name, components, models.
+
+    Parameters
+    ----------
+    name : str
+        Name of ibis model.
+    circuit : class:`ansys.aedt.core.circuit.Circuit`
+        Circuit in which the ibis components will be used.
+
+    Examples
+    --------
+    >>> from pathlib import Path
+    >>> from ansys.aedt.core import Circuit
+    >>> from ansys.aedt.core.generic.ibis_reader import IbisReader
+    >>> circuit = Circuit()
+    >>> reader = IbisReader(Path(r"C:\\IBIS\\example.ibs"), circuit)
+    >>> reader.parse_ibis_file()
+    >>> reader.ibis_model
+
+    """
+
+    # Ibis reader must work independently or in Circuit.
+    def __init__(self, name: str, app) -> None:
+        self._app = app
+        self.circuit = app._circuit
+        self._name = name
+        self._components = {}
+        self._model_selectors = []
+        self._models = []
+        self._buffers = {}
+        self._is_ami = False
+
+    @property
+    def name(self) -> str:
+        """Name of the ibis model.
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> from ansys.aedt.core import Circuit
+        >>> from ansys.aedt.core.generic.ibis_reader import IbisReader
+        >>> circuit = Circuit()
+        >>> reader = IbisReader(Path(r"C:\\IBIS\\example.ibs"), circuit)
+        >>> reader.parse_ibis_file()
+        >>> reader.ibis_model.name
+
+        """
+        return self._name
+
+    @property
+    def components(self) -> dict:
+        """List of all components included in the ibis file.
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> from ansys.aedt.core import Circuit
+        >>> from ansys.aedt.core.generic.ibis_reader import IbisReader
+        >>> circuit = Circuit()
+        >>> reader = IbisReader(Path(r"C:\\IBIS\\example.ibs"), circuit)
+        >>> reader.parse_ibis_file()
+        >>> reader.ibis_model.components
+
+        """
+        return self._components
+
+    @components.setter
+    def components(self, value: dict) -> None:
+        self._components = value
+
+    @property
+    def model_selectors(self) -> list:
+        """List of all model selectors included in the ibis file.
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> from ansys.aedt.core import Circuit
+        >>> from ansys.aedt.core.generic.ibis_reader import IbisReader
+        >>> circuit = Circuit()
+        >>> reader = IbisReader(Path(r"C:\\IBIS\\example.ibs"), circuit)
+        >>> reader.parse_ibis_file()
+        >>> reader.ibis_model.model_selectors
+
+        """
+        return self._model_selectors
+
+    @model_selectors.setter
+    def model_selectors(self, value: list) -> None:
+        self._model_selectors = value
+
+    @property
+    def models(self) -> list:
+        """List of all models included in the ibis file.
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> from ansys.aedt.core import Circuit
+        >>> from ansys.aedt.core.generic.ibis_reader import IbisReader
+        >>> circuit = Circuit()
+        >>> reader = IbisReader(Path(r"C:\\IBIS\\example.ibs"), circuit)
+        >>> reader.parse_ibis_file()
+        >>> reader.ibis_model.models
+
+        """
+        return self._models
+
+    @models.setter
+    def models(self, value: list) -> None:
+        self._models = value
+
+    @property
+    def buffers(self) -> dict:
+        """Buffers included into the ibis model.
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> from ansys.aedt.core import Circuit
+        >>> from ansys.aedt.core.generic.ibis_reader import IbisReader
+        >>> circuit = Circuit()
+        >>> reader = IbisReader(Path(r"C:\\IBIS\\example.ibs"), circuit)
+        >>> reader.parse_ibis_file()
+        >>> reader.ibis_model.buffers
+
+        """
+        return self._buffers
+
+    @buffers.setter
+    def buffers(self, value: dict) -> None:
+        self._buffers = value
+
+    @property
+    def is_ami(self) -> bool:
+        """Whether the ibis model declares an algorithmic model (IBIS-AMI).
+
+        Returns
+        -------
+        bool
+            ``True`` if an algorithmic model is declared, ``False`` otherwise.
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> from ansys.aedt.core import Circuit
+        >>> from ansys.aedt.core.generic.ibis_reader import IbisReader
+        >>> circuit = Circuit()
+        >>> reader = IbisReader(Path(r"C:\\IBIS\\example.ibs"), circuit)
+        >>> reader.parse_ibis_file()
+        >>> reader.ibis_model.is_ami
+
+        """
+        return self._is_ami
+
+    @is_ami.setter
+    def is_ami(self, value: bool) -> None:
+        self._is_ami = value
+
+    @property
+    @deprecated_property(reason="Use is_ami instead.")
+    def AMI(self) -> bool:  # noqa: N802
+        return self.is_ami
+
+    @AMI.setter
+    @deprecated_property(reason="Use is_ami instead.")
+    def AMI(self, value: bool) -> None:  # noqa: N802
+        self.is_ami = value
+
+
+class AMI(PyAedtBase):
+    """Ibis-AMI model with all data extracted: name, components, models.
+
+    Parameters
+    ----------
+    name : str
+        Name of ibis model.
+    circuit : class:`ansys.aedt.core.circuit.Circuit`
+        Circuit in which the ibis components will be used.
+
+    Examples
+    --------
+    >>> from pathlib import Path
+    >>> from ansys.aedt.core import Circuit
+    >>> from ansys.aedt.core.generic.ibis_reader import AMIReader
+    >>> circuit = Circuit()
+    >>> reader = AMIReader(Path(r"C:\\IBIS\\example.ami"), circuit)
+    >>> reader.parse_ibis_file()
+    >>> reader.ami_model
+
+    """
+
+    # Ibis reader must work independently or in Circuit.
+    def __init__(self, name: str, app) -> None:
+        self._app = app
+        self.circuit = app._circuit
+        self._name = name
+        self._components = {}
+        self._model_selectors = []
+        self._models = []
+        self._buffers = {}
+        self._is_ami = False
+
+    @property
+    def name(self) -> str:
+        """Name of the ibis model.
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> from ansys.aedt.core import Circuit
+        >>> from ansys.aedt.core.generic.ibis_reader import AMIReader
+        >>> circuit = Circuit()
+        >>> reader = AMIReader(Path(r"C:\\IBIS\\example.ami"), circuit)
+        >>> reader.parse_ibis_file()
+        >>> reader.ami_model.name
+
+        """
+        return self._name
+
+    @property
+    def components(self) -> dict:
+        """List of all components included in the ibis file.
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> from ansys.aedt.core import Circuit
+        >>> from ansys.aedt.core.generic.ibis_reader import AMIReader
+        >>> circuit = Circuit()
+        >>> reader = AMIReader(Path(r"C:\\IBIS\\example.ami"), circuit)
+        >>> reader.parse_ibis_file()
+        >>> reader.ami_model.components
+
+        """
+        return self._components
+
+    @components.setter
+    def components(self, value: dict) -> None:
+        self._components = value
+
+    @property
+    def model_selectors(self) -> list:
+        """List of all model selectors included in the ibis file.
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> from ansys.aedt.core import Circuit
+        >>> from ansys.aedt.core.generic.ibis_reader import AMIReader
+        >>> circuit = Circuit()
+        >>> reader = AMIReader(Path(r"C:\\IBIS\\example.ami"), circuit)
+        >>> reader.parse_ibis_file()
+        >>> reader.ami_model.model_selectors
+
+        """
+        return self._model_selectors
+
+    @model_selectors.setter
+    def model_selectors(self, value: list) -> None:
+        self._model_selectors = value
+
+    @property
+    def models(self) -> list:
+        """List of all models included in the ibis file.
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> from ansys.aedt.core import Circuit
+        >>> from ansys.aedt.core.generic.ibis_reader import AMIReader
+        >>> circuit = Circuit()
+        >>> reader = AMIReader(Path(r"C:\\IBIS\\example.ami"), circuit)
+        >>> reader.parse_ibis_file()
+        >>> reader.ami_model.models
+
+        """
+        return self._models
+
+    @models.setter
+    def models(self, value: list) -> None:
+        self._models = value
+
+    @property
+    def buffers(self) -> dict:
+        """Buffers included into the ibis model.
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> from ansys.aedt.core import Circuit
+        >>> from ansys.aedt.core.generic.ibis_reader import AMIReader
+        >>> circuit = Circuit()
+        >>> reader = AMIReader(Path(r"C:\\IBIS\\example.ami"), circuit)
+        >>> reader.parse_ibis_file()
+        >>> reader.ami_model.buffers
+
+        """
+        return self._buffers
+
+    @buffers.setter
+    def buffers(self, value: dict) -> None:
+        self._buffers = value
+
+    @property
+    def is_ami(self) -> bool:
+        """Whether the ibis model declares an algorithmic model (IBIS-AMI).
+
+        Returns
+        -------
+        bool
+            ``True`` if an algorithmic model is declared, ``False`` otherwise.
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> from ansys.aedt.core import Circuit
+        >>> from ansys.aedt.core.generic.ibis_reader import AMIReader
+        >>> circuit = Circuit()
+        >>> reader = AMIReader(Path(r"C:\\IBIS\\example.ami"), circuit)
+        >>> reader.parse_ibis_file()
+        >>> reader.ami_model.is_ami
+
+        """
+        return self._is_ami
+
+    @is_ami.setter
+    def is_ami(self, value: bool) -> None:
+        self._is_ami = value
+
+    @property
+    @deprecated_property(reason="Use is_ami instead.")
+    def AMI(self) -> bool:  # noqa: N802
+        return self.is_ami
+
+    @AMI.setter
+    @deprecated_property(reason="Use is_ami instead.")
+    def AMI(self, value: bool) -> None:  # noqa: N802
+        self.is_ami = value
+
+
+IbisModel = Ibis | AMI
+
+
+class IbisReader(PyAedtBase):
+    """Reads *.ibis file content.
+
+    Setup an Ibis object exposing all the extracted data.
+
+    Parameters
+    ----------
+    filename : str or :class:`pathlib.Path`
+        Name of ibis model.
+    circuit : class:`ansys.aedt.core.circuit.Circuit`
+        Circuit in which the ibis components will be used.
+
+    Examples
+    --------
+    >>> from pathlib import Path
+    >>> from ansys.aedt.core import Circuit
+    >>> from ansys.aedt.core.generic.ibis_reader import IbisReader
+    >>> circuit = Circuit()
+    >>> reader = IbisReader(Path(r"C:\\IBIS\\example.ibs"), circuit)
+
+    """
+
+    def __init__(self, filename: str | Path, circuit) -> None:
+        filename = Path(filename)
+        self._filename = filename
+        self._circuit = circuit
+        self._ibis_model: IbisModel | None = None
+
+    @property
+    def ibis_model(self) -> IbisModel | None:
+        """Ibis model gathering the entire set of data extracted from the \\*.ibis file.
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> from ansys.aedt.core import Circuit
+        >>> from ansys.aedt.core.generic.ibis_reader import IbisReader
+        >>> circuit = Circuit()
+        >>> reader = IbisReader(Path(r"C:\\IBIS\\example.ibs"), circuit)
+        >>> reader.parse_ibis_file()
+        >>> reader.ibis_model
+
+        """
+        return self._ibis_model
+
+    def parse_ibis_file(self) -> dict | bool:
+        """Read \\*.ibis file content.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.generic.ibis_reader.Ibis`
+            Ibis object exposing all data from the ibis file.
+
+        Examples
+        --------
+        Read u26a_800.ibs file provided in the AEDT suit installation.
+        >>> from pathlib import Path
+        >>> from ansys.aedt.core import Desktop
+        >>> from ansys.aedt.core.circuit import Circuit
+        >>> from ansys.aedt.core.generic import ibis_reader
+        >>> desktop = Desktop()
+        >>> circuit = Circuit()
+        >>> ibis_file = Path(desktop.install_path) / "buflib" / "IBIS" / "u26a_800.ibs"
+        >>> ibis = ibis_reader.IbisReader(ibis_file, circuit)
+
+        """
+        if not check_if_path_exists(self._filename):
+            raise Exception(f"{self._filename} does not exist.")
+
+        ibis_name = get_filename_without_extension(self._filename)
+        ibis = Ibis(ibis_name, self)
+
+        check_and_download_file(self._filename)
+
+        # Read *.ibis file.
+        ibis_info = ibis_parsing(self._filename)
+        if not isinstance(ibis_info, dict):
+            logger.error("Failed to parse IBIS file.")
+            return ibis_info
+        component_selector = [ibis_info[item] for item in ibis_info if "component" in item]
+
+        self.read_component(ibis, component_selector)
+
+        model_selector = [ibis_info[item] for item in ibis_info if "model selector" in item]
+        self.read_model_selector(ibis, model_selector)
+
+        # model = [ibis_info[item] for item in ibis_info if 'selector' not in item and 'model' in item]
+        model = [ibis_info[item] for item in ibis_info if re.match(r"^model\d*$", item) is not None]
+
+        self.read_model(ibis, model)
+
+        buffers = {}
+        for model_selector in ibis.model_selectors:
+            buffer = Buffer(ibis_name, model_selector.name, self)
+            buffers[buffer.short_name] = buffer
+
+        for model in ibis.models:
+            buffer = Buffer(ibis_name, model.name, self)
+            buffers[buffer.short_name] = buffer
+
+        ibis.buffers = buffers
+        self._ibis_model = ibis
+
+        return ibis_info
+
+    def import_model_in_aedt(self, pins: list | None = None, buffers: list | None = None) -> bool:
+        """Check and import the ibis model in AEDT.
+
+        Parameters
+        ----------
+        pins : list,str, optional
+            Pin to import.
+        buffers : list, str, optional
+            Buffers to import.
+
+        Returns
+        -------
+        bool
+            ``True`` when the model is imported successfully, ``False`` if not imported or model already present.
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> from ansys.aedt.core import Circuit
+        >>> from ansys.aedt.core.generic.ibis_reader import IbisReader
+        >>> circuit = Circuit()
+        >>> reader = IbisReader(Path(r"C:\\IBIS\\example.ibs"), circuit)
+        >>> reader.parse_ibis_file()
+        >>> reader.import_model_in_aedt()
+
+        """
+        if self._ibis_model is None:
+            logger.error("IBIS model is not parsed. Please parse the IBIS file first.")
+            return False
+        if buffers is None:
+            buffers = []
+        elif isinstance(buffers, str):
+            buffers = [buffers]
+        if pins is None:
+            pins = []
+        elif isinstance(pins, str):
+            pins = [pins]
+        bufs = [i.name for i in self._ibis_model.buffers.values()]
+        model_names = [i.name for i in self._ibis_model.models] + [i.name for i in self._ibis_model.model_selectors]
+        bufs = [i for i in bufs if i not in self._circuit.modeler.schematic.ocomponent_manager.GetNames()]
+
+        if not bufs and not (buffers or pins):
+            return False
+
+        if self._circuit:
+            args = [
+                "NAME:Options",
+                "Mode:=",
+                4,
+                "Overwrite:=",
+                False,
+                "SupportsSimModels:=",
+                False,
+                "LoadOnly:=",
+                False,
+            ]
+            arg_buffers = ["NAME:Buffers"]
+            for buffer_item in self._ibis_model.buffers.values():
+                arg_buffers.append(f"{buffer_item.short_name}:=")
+                arg_buffers.append(
+                    [True if (not buffers and not pins) or buffer_item.name in buffers else False, "IbisSingleEnded"]
+                )
+            arg_components = ["NAME:Components"]
+            for comp_value in self._ibis_model.components.values():
+                arg_component = [f"NAME:{comp_value.name}"]
+                for pin in comp_value.pins.values():
+                    arg_component.append(f"{pin.short_name}:=")
+                    arg_component.append(
+                        [
+                            True
+                            if pin.model in model_names and ((not buffers and not pins) or pin.name in pins)
+                            else False,
+                            False,
+                        ]
+                    )
+                for pin in comp_value.differential_pins.values():
+                    arg_component.append(f"{pin.short_name}:=")
+                    arg_component.append(
+                        [
+                            True
+                            if pin.model in model_names and ((not buffers and not pins) or pin.name in pins)
+                            else False,
+                            True,
+                        ]
+                    )
+                arg_components.append(arg_component)
+
+            args.append(arg_buffers)
+            args.append(arg_components)
+
+            self._circuit.modeler.schematic.ocomponent_manager.ImportModelsFromFile(str(self._filename), args)
+            return True
+        return False
+
+    # Model
+    def read_model(self, ibis: IbisModel, model_list: list) -> None:
+        """Extract model's info.
+
+        Parameters
+        ----------
+        ibis : :class:`ansys.aedt.core.generic.ibis_reader.Ibis`
+            ibis object containing all info.
+        current_line : str
+            Current line content.
+        ibis_file : TextIO
+            File's stream.
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> from ansys.aedt.core import Circuit
+        >>> from ansys.aedt.core.generic.ibis_reader import Ibis, IbisReader
+        >>> circuit = Circuit()
+        >>> reader = IbisReader(Path(r"C:\\IBIS\\example.ibs"), circuit)
+        >>> ibis = Ibis("example", reader)
+        >>> reader.read_model(ibis, [{"model": "DQ_FULL_800\\nModel_type Input"}])
+
+        """
+        for model_info in model_list:
+            if "model" in model_info:
+                model_spec_info = model_info["model"].strip().split("\n")
+            elif "model selector" in model_info:
+                model_spec_info = model_info["model selector"].strip().split("\n")
+                model_spec_info = [i.split(" ")[0] for i in model_spec_info]
+            for idx, model_spec in enumerate(model_spec_info):
+                if not idx:
+                    model = Model()
+                    model.name = model_spec
+                else:
+                    if is_started_with(model_spec.lower(), "model_type"):
+                        # model.model_type = model_spec.split()[-1].strip()
+                        model.model_type = model_spec.split()[-1].strip()
+                        # iStart = model_spec.index(" ", 1)
+                        # if iStart > 0:
+                        #     model.ModelType = model_spec[iStart:].strip()
+                    elif is_started_with(model_spec.lower(), "c_comp"):
+                        model.c_comp = model_spec.split()[1:]
+
+                    elif is_started_with(model_spec.lower(), "enable ", True):
+                        model.enable = model_spec.split()[-1].strip()
+
+            if "gnd clamp" in [key.lower() for key in model_info.keys()]:
+                model.clamp = True
+            if "algorithmic model" in [key.lower() for key in model_info.keys()]:
+                matching_key = next((key for key in model_info.keys() if "algorithmic model" in key.lower()), None)
+                model.ami = model_info[matching_key][matching_key].split()
+                ibis.is_ami = True
+            else:
+                ibis.is_ami = False
+            if model.model_type:
+                ibis.models.append(model)
+
+    # Model Selector
+    def read_model_selector(self, ibis: IbisModel, model_selector_list: list) -> None:
+        """Extract model selector's info.
+
+        Parameters
+        ----------
+        ibis : :class:`ansys.aedt.core.generic.ibis_reader.Ibis`
+            ibis object containing all info.
+        current_line : str
+            Current line content.
+        ibis_file : TextIO
+            File's stream.
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> from ansys.aedt.core import Circuit
+        >>> from ansys.aedt.core.generic.ibis_reader import Ibis, IbisReader
+        >>> circuit = Circuit()
+        >>> reader = IbisReader(Path(r"C:\\IBIS\\example.ibs"), circuit)
+        >>> ibis = Ibis("example", reader)
+        >>> reader.read_model_selector(ibis, [{"model selector": "MODEL_SEL\\nDQ_FULL_800 Typical corner"}])
+
+        """
+        for model_selector_info in model_selector_list:
+            model_selector_info = model_selector_info["model selector"].strip().split("\n")
+            for idx, model in enumerate(model_selector_info):
+                if not idx:
+                    model_selector = ModelSelector()
+                    model_selector.model_selector_items = []
+                    model_selector.name = model
+                else:
+                    model_selector.model_selector_items.append(self.make_model(model.strip()))
+
+            # ModelSelectorItem
+            ibis.model_selectors.append(model_selector)
+
+    @classmethod
+    def make_model(cls, current_line: str) -> ModelSelectorItem:
+        """Create model object.
+
+        Parameters
+        ----------
+        current_line : str
+            Current line content.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.generic.ibis_reader.ModelSelectorItem`
+            Model selector item.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.ibis_reader import IbisReader
+        >>> item = IbisReader.make_model("DQ_FULL_800 Typical corner")
+        >>> item.name
+        'DQ_FULL_800'
+
+        """
+        item = ModelSelectorItem()
+        if " " in current_line:
+            i_start = current_line.index(" ", 1)
+        elif "\t" in current_line:
+            i_start = current_line.index("\t", 1)
+        else:
+            return item
+
+        if i_start > 0:
+            item.name = current_line[:i_start].strip()
+            item.description = current_line[i_start:].strip()
+
+        return item
+
+    # Component
+    def read_component(self, ibis: IbisModel, comp_infos: list) -> None:
+        """Extracts component's info.
+
+        Parameters
+        ----------
+        ibis : :class:`ansys.aedt.core.generic.ibis_reader.Ibis`
+            ibis object containing all info.
+        comp_infos : list
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> from ansys.aedt.core import Circuit
+        >>> from ansys.aedt.core.generic.ibis_reader import Ibis, IbisReader
+        >>> circuit = Circuit()
+        >>> reader = IbisReader(Path(r"C:\\IBIS\\example.ibs"), circuit)
+        >>> ibis = Ibis("example", reader)
+        >>> comp_info = {
+        ...     "component": "U1",
+        ...     "manufacturer": {"manufacturer": "Example"},
+        ...     "package": {"package": ""},
+        ...     "pin": {"pin": "signal_name model R L C\\nA1 VDD POWER 0 0 0"},
+        ... }
+        >>> reader.read_component(ibis, [comp_info])
+
+        """
+        if not isinstance(comp_infos, list):
+            comp_infos = [comp_infos]
+        for comp_info in comp_infos:
+            component = Component()
+            component_name = comp_info["component"]
+            component.name = component_name
+            component.manufacturer = comp_info["manufacturer"]["manufacturer"]
+            self.fill_package_info(component, comp_info["package"]["package"])
+            pin_list = comp_info["pin"]["pin"].strip().split("\n")[1:]
+            for pin_info in pin_list:
+                pin = self.make_pin_object(pin_info, component_name, ibis)
+                component.pins[pin.short_name] = pin
+
+            try:
+                diff_pin_list = comp_info["diff pin"]["diff pin"].strip().split("\n")[1:]
+                for pin_info in diff_pin_list:
+                    pin = self.make_diff_pin_object(pin_info, component, ibis)
+                    if pin is None:
+                        raise ValueError(f"Failed to create differential pin from line: {pin_info}")
+                    component.differential_pins[pin.short_name] = pin
+            except Exception as error:  # pragma: no cover
+                logger.warning(f"Cannot find Diff Pin. Ignore it. Exception message: {error}")
+            ibis.components[component_name] = component
+
+    @classmethod
+    def fill_package_info(cls, component: Component, pkg_info: str) -> None:
+        """Extract model's info.
+
+        Parameters
+        ----------
+        component : :class:`ansys.aedt.core.generic.ibis_reader.Component`
+            Current line content.
+        pkg_info : str
+             Package info string.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.ibis_reader import Component, IbisReader
+        >>> component = Component()
+        >>> IbisReader.fill_package_info(component, "R_pkg 0.1\\nL_pkg 1nH\\nC_pkg 1pF")
+
+        """
+        pkg_lines = pkg_info.strip().split("\n")
+        for rlc in pkg_lines:
+            if is_started_with(rlc, "R_pkg"):
+                component.r_pkg = rlc.strip()
+            elif is_started_with(rlc, "L_pkg"):
+                component.l_pkg = rlc.strip()
+            elif is_started_with(rlc, "C_pkg"):
+                component.c_pkg = rlc.strip()
+
+    @classmethod
+    def get_component_name(cls, line: str) -> str:
+        """Get the name of the component.
+
+        Parameters
+        ----------
+        line : str
+            Current line content.
+
+        Returns
+        -------
+        str
+            Name of the component.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.ibis_reader import IbisReader
+        >>> IbisReader.get_component_name("[Component] U1")
+        'U1'
+
+        """
+        return line.replace("[Component]", "").strip()
+
+    def make_diff_pin_object(self, line: str, component: Component, ibis: IbisModel) -> DifferentialPin | None:
+        """Extract the model's differential pin information.
+
+        Parameters
+        ----------
+        line : str
+            Current line content.
+        component : Component
+            Name of the component.
+        ibis : :class:`ansys.aedt.core.generic.ibis_reader.Ibis`
+            Ibis object containing all pin information.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.generic.ibis_reader.DifferentialPin`
+            Differential pin object, or ``None`` if no matching pin is found.
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> from ansys.aedt.core import Circuit
+        >>> from ansys.aedt.core.generic.ibis_reader import Component, Ibis, IbisReader
+        >>> circuit = Circuit()
+        >>> reader = IbisReader(Path(r"C:\\IBIS\\example.ibs"), circuit)
+        >>> ibis = Ibis("example", reader)
+        >>> component = Component()
+        >>> component.name = "U1"
+        >>> component.pins = {}
+        >>> component.differential_pins = {}
+        >>> reader.make_diff_pin_object("A1 A2 0.2 10ps 8ps 12ps", component, ibis)
+
+        """
+        current_string = ""
+        component_name = component.name
+        if component_name is None:
+            logger.error("Component name is not specified.")
+            return None
+        current_string = line.strip().replace("\t", " ")
+
+        pin_name = self.get_first_parameter(current_string)
+        current_string = current_string[len(pin_name) + 1 :].strip()
+
+        neg_pin = self.get_first_parameter(current_string)
+        current_string = current_string[len(neg_pin) + 1 :].strip()
+
+        vdiff = self.get_first_parameter(current_string)
+        current_string = current_string[len(vdiff) + 1 :].strip()
+
+        tdelay_typ = self.get_first_parameter(current_string)
+        current_string = current_string[len(tdelay_typ) + 1 :].strip()
+
+        tdelay_min = self.get_first_parameter(current_string)
+        current_string = current_string[len(tdelay_min) + 1 :].strip()
+
+        tdelay_max = self.get_first_parameter(current_string)
+
+        single_ended_pin_name = pin_name + "_" + component_name + "_" + ibis.name
+        diff_pin_name = single_ended_pin_name + "_diff"
+        for p_name, pinval in component.pins.items():
+            if pin_name == p_name:
+                pin = DifferentialPin(diff_pin_name, pinval.buffer_name + "_diff", self)
+                pin._short_name = pinval.short_name
+                pin._tdelay_max = tdelay_max
+                pin._tdelay_min = tdelay_min
+                pin._tdelay_typ = tdelay_typ
+                pin._negative_pin = neg_pin
+                pin._vdiff = diff_pin_name
+                pin._model = pinval.model
+                return pin
+        return None
+
+    def make_pin_object(self, line: str, component_name: str, ibis: IbisModel) -> Pin:
+        """Extract model's info.
+
+        Parameters
+        ----------
+        line : str
+            Current line content.
+        component_name : str
+            Name of the component.
+        ibis : :class:`ansys.aedt.core.generic.ibis_reader.Ibis`
+            ibis object containing all info.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.generic.ibis_reader.Pin`
+            Pin object.
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> from ansys.aedt.core import Circuit
+        >>> from ansys.aedt.core.generic.ibis_reader import Ibis, IbisReader
+        >>> circuit = Circuit()
+        >>> reader = IbisReader(Path(r"C:\\IBIS\\example.ibs"), circuit)
+        >>> ibis = Ibis("example", reader)
+        >>> reader.make_pin_object("A1 VDD POWER 0 0 0", "U1", ibis)
+
+        """
+        current_string = ""
+
+        current_string = line.strip().replace("\t", " ")
+
+        pin_name = self.get_first_parameter(current_string)
+        current_string = current_string[len(pin_name) + 1 :].strip()
+
+        signal = self.get_first_parameter(current_string).replace(",", "")
+        current_string = current_string[len(signal) + 1 :].strip()
+
+        model = self.get_first_parameter(current_string).replace(",", "")
+        current_string = current_string[len(model) + 1 :].strip()
+
+        r_value = self.get_first_parameter(current_string)
+        current_string = current_string[len(r_value) + 1 :].strip()
+
+        l_value = self.get_first_parameter(current_string)
+        current_string = current_string[len(l_value) + 1 :].strip()
+
+        c_value = self.get_first_parameter(current_string)
+        pin_name = pin_name.replace("/", "")
+        component_name = component_name.replace("/", "")
+        ibis_name = ibis.name.replace("/", "")
+        pin = Pin(
+            pin_name + "_" + component_name + "_" + ibis_name,
+            signal + "_" + component_name + "_" + ibis_name,
+            ibis,
+        )
+        pin.short_name = pin_name
+        pin.signal = signal
+        pin.model = model
+        pin.r_value = r_value
+        pin.l_value = l_value
+        pin.c_value = c_value
+
+        return pin
+
+    @classmethod
+    def get_first_parameter(cls, line: str) -> str:
+        """Get first parameter string value.
+
+        Parameters
+        ----------
+        line : str
+            Current line content.
+
+        Returns
+        -------
+        str
+            First info extracted from the current line.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.ibis_reader import IbisReader
+        >>> IbisReader.get_first_parameter("A1 VDD POWER 0 0 0")
+        'A1'
+
+        """
+        if line == "":
+            return ""
+
+        data = line.split(" ")
+        return data[0].strip()
+
+
+class AMIReader(IbisReader, PyAedtBase):
+    """Reads IBIS file content.
+
+    Setup an Ibis object exposing all the extracted data.
+
+    Parameters
+    ----------
+    filename : str
+        Name of ibis model.
+    circuit : class:`ansys.aedt.core.circuit.Circuit`
+        Circuit in which the ibis components will be used.
+
+    Examples
+    --------
+    >>> from pathlib import Path
+    >>> from ansys.aedt.core import Circuit
+    >>> from ansys.aedt.core.generic.ibis_reader import AMIReader
+    >>> circuit = Circuit()
+    >>> reader = AMIReader(Path(r"C:\\IBIS\\example.ami"), circuit)
+
+    """
+
+    def __init__(self, filename: str | Path, circuit) -> None:
+        self._filename = Path(filename)
+        self._circuit = circuit
+        self._ami_model: AMI | None = None
+
+    @property
+    def ami_model(self) -> AMI | None:
+        """Ibis-AMI model gathering the entire set of data extracted from the \\*.ami file.
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> from ansys.aedt.core import Circuit
+        >>> from ansys.aedt.core.generic.ibis_reader import AMIReader
+        >>> circuit = Circuit()
+        >>> reader = AMIReader(Path(r"C:\\IBIS\\example.ami"), circuit)
+        >>> reader.parse_ibis_file()
+        >>> reader.ami_model
+
+        """
+        return self._ami_model
+
+    def parse_ibis_file(self) -> dict | bool:
+        """Reads \\*.ami file content.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.generic.ibis_reader.Ibis`
+            Ibis object exposing all data from the ibis file.
+
+        Examples
+        --------
+        Read u26a_800.ibs file provided in the AEDT suit installation.
+        >>> from pathlib import Path
+        >>> from ansys.aedt.core import Desktop
+        >>> from ansys.aedt.core.circuit import Circuit
+        >>> from ansys.aedt.core.generic import ibis_reader
+        >>> desktop = Desktop()
+        >>> circuit = Circuit()
+        >>> ibis_file = Path(desktop.install_path) / "buflib" / "IBIS" / "u26a_800.ibs"
+        >>> ibis = ibis_reader.IbisReader(ibis_file, circuit)
+
+        """
+        if not check_if_path_exists(self._filename):
+            raise Exception(f"{self._filename} does not exist.")
+
+        ami_name = get_filename_without_extension(self._filename)
+        ibis = AMI(ami_name, self)
+        check_and_download_file(self._filename)
+
+        # Read *.ibis file.
+        ibis_info = ibis_parsing(self._filename)
+        if not isinstance(ibis_info, dict):
+            logger.error("Failed to parse IBIS file.")
+            return ibis_info
+        component_selector = [ibis_info[item] for item in ibis_info if "component" in item]
+
+        self.read_component(ibis, component_selector)
+
+        model_selector = [ibis_info[item] for item in ibis_info if "model selector" in item]
+        self.read_model_selector(ibis, model_selector)
+
+        # model = [ibis_info[item] for item in ibis_info if 'selector' not in item and 'model' in item]
+        model = [ibis_info[item] for item in ibis_info if item.startswith("model")]
+
+        self.read_model(ibis, model)
+
+        buffers = {}
+        ami_name = ami_name.replace("/", "")
+        for model_selector in ibis.model_selectors:
+            model_selector_name = model_selector.name.replace("/", "")
+            buffer = Buffer(ami_name, model_selector_name, self)
+            buffers[buffer.short_name] = buffer
+
+        for model in ibis.models:
+            model_selector_name = model.name.replace("/", "")
+            buffer = Buffer(ami_name, model_selector_name, self)
+            buffers[buffer.short_name] = buffer
+
+        ibis.buffers = buffers
+
+        self._ibis_model = ibis
+        return ibis_info
+
+    def import_model_in_aedt(self, pins: list | None = None, buffers: list | None = None) -> bool:
+        """Check and import the ibis model in AEDT.
+
+        Returns
+        -------
+        bool
+            ``True`` when the model is imported successfully, ``False`` if not imported or model already present.
+
+        Examples
+        --------
+        >>> from pathlib import Path
+        >>> from ansys.aedt.core import Circuit
+        >>> from ansys.aedt.core.generic.ibis_reader import AMIReader
+        >>> circuit = Circuit()
+        >>> reader = AMIReader(Path(r"C:\\IBIS\\example.ami"), circuit)
+        >>> reader.parse_ibis_file()
+        >>> reader.import_model_in_aedt()
+
+        """
+        if self._ibis_model is None:
+            logger.error("IBIS model is not parsed. Please parse the IBIS file first.")
+            return False
+
+        if buffers is None:
+            buffers = []
+        elif isinstance(buffers, str):
+            buffers = [buffers]
+        if pins is None:
+            pins = []
+        elif isinstance(pins, str):
+            pins = [pins]
+        bufs = [i.name for i in self._ibis_model.buffers.values()]
+        bufs = [i for i in bufs if i not in self._circuit.modeler.schematic.ocomponent_manager.GetNames()]
+        model_names = [i.name for i in self._ibis_model.models] + [i.name for i in self._ibis_model.model_selectors]
+
+        if not bufs and not (buffers or pins):
+            return False
+
+        if self._circuit:
+            args = [
+                "NAME:Options",
+                "Mode:=",
+                4,
+                "Overwrite:=",
+                False,
+                "SupportsSimModels:=",
+                False,
+                "LoadOnly:=",
+                False,
+            ]
+            arg_buffers = ["NAME:Buffers"]
+            for buffer in self._ibis_model.buffers:
+                arg_buffers.append(f"{self._ibis_model.buffers[buffer].short_name}:=")
+                arg_buffers.append(
+                    [
+                        True
+                        if (not buffers and not pins) or self._ibis_model.buffers[buffer].name in buffers
+                        else False,
+                        "IbisSingleEnded",
+                    ]
+                )
+            arg_components = ["NAME:Components"]
+            for component in self._ibis_model.components:
+                arg_component = [f"NAME:{self._ibis_model.components[component].name}"]
+                for pin in self._ibis_model.components[component].pins.values():
+                    arg_component.append(f"{pin.short_name}:=")
+                    arg_component.append(
+                        [
+                            True
+                            if pin.model in model_names and ((not buffers and not pins) or pin.name in pins)
+                            else False,
+                            False,
+                        ]
+                    )
+
+                for pin in self._ibis_model.components[component].differential_pins.values():
+                    arg_component.append(f"{pin.short_name}:=")
+                    arg_component.append(
+                        [
+                            True
+                            if pin.model in model_names and ((not buffers and not pins) or pin.name in pins)
+                            else False,
+                            True,
+                        ]
+                    )
+
+                arg_components.append(arg_component)
+
+            args.append(arg_buffers)
+            args.append(arg_components)
+
+            self._circuit.modeler.schematic.ocomponent_manager.ImportModelsFromFile(str(self._filename), args)
+            return True
+        return False
+
+
+def is_started_with(src: str, find: str, ignore_case: bool = True) -> bool:
+    """Verify if a string content starts with a specific string or not.
+
+    This is identical to ``str.startswith``, except that it includes
+    the ``ignore_case`` parameter.
+
+    Parameters
+    ----------
+    src : str
+        Current line content.
+    find : str
+        Current line content.
+    ignore_case : bool, optional
+        Case sensitive or not. The default value is ``True``.
+
+    Returns
+    -------
+    bool
+        ``True`` if the src string starts with the pattern.
+
+    Examples
+    --------
+    >>> from ansys.aedt.core.generic.ibis_reader import is_started_with
+    >>> is_started_with("Model_type Input", "model_type")
+    True
+
+    """
+    if ignore_case:
+        return src.lower().startswith(find.lower())
+    return src.startswith(find)
+
+
+def lowercase_json(json_data):
+    """Convert a json structure to lower case.
+
+    Examples
+    --------
+    >>> from ansys.aedt.core.generic.ibis_reader import lowercase_json
+    >>> lowercase_json({"Model": ["Input", {"Corner": "FAST"}]})
+    {'model': ['input', {'corner': 'fast'}]}
+
+    """
+    if isinstance(json_data, str):
+        return json_data.lower()
+    elif isinstance(json_data, dict):
+        return {lowercase_json(k): lowercase_json(v) for k, v in json_data.items()}
+    elif isinstance(json_data, list):
+        return [lowercase_json(item) for item in json_data]
+    else:
+        return json_data
+
+
+def ibis_parsing(file: str | Path) -> dict | bool:
+    """Open and parse ibis file using json Ibis template.
+
+    Parameters
+    ----------
+    file : str or :class:`pathlib.Path`
+        File name to parse.
+
+    Examples
+    --------
+    >>> from pathlib import Path
+    >>> from ansys.aedt.core.generic.ibis_reader import ibis_parsing
+    >>> ibis_parsing(Path(r"C:\\IBIS\\example.ibs"))
+
+    """
+    ibis: dict = {}
+    # OPEN AND READ IBIS FILE
+    fp = open_file(file, "r")
+    if fp is None:
+        raise IOError(f"Cannot open IBIS file {file}.")
+    with fp:
+        ibis_data = list(enumerate(fp))
+
+    ibis_file = Path(__file__).parents[1] / "misc" / "ibis_v7.json"
+    f = open_file(ibis_file, "r")
+    if f is None:
+        logger.error(f"Cannot open IBIS reference file {ibis_file}.")
+        return False
+    with f:
+        ibis_ref = json.load(f)
+    ibis_ref = lowercase_json(ibis_ref)
+
+    # FOR EACH LINE
+    try:
+        level = -1
+        key_iter = [0, 0, 0, 0]
+        pre_key_ref = ["", "", "", ""]
+        pre_key_save = ["", "", "", ""]
+        for _, line in ibis_data:
+            # COMMENT
+            if line[0] == "|":
+                pass
+
+            # KEYWORD START
+            elif line[0] == "[":
+                # FIND IBIS KEYWORD : [keyword]
+                key = line.split("[")[-1].split("]")[0].replace("_", " ")
+                key_ref = key.lower()
+                # if key == 'End':
+                #     print("JH")
+                val = line.split("]")[-1].strip()
+                if key_ref == "model":
+                    pass
+
+                if "end" in key_ref:
+                    pass
+
+                # FOR TOP LEVEL KEYWORD
+                elif key_ref in ibis_ref.keys():
+                    level = 0
+                    if key_ref in ibis.keys():
+                        key_iter[0] += 1
+                        key_save = key_ref + str(key_iter[0])
+                    else:
+                        key_save = key_ref
+
+                    ibis[key_save] = {}
+                    ibis[key_save][key_ref] = val
+                    pre_key_ref[0] = key_ref
+                    pre_key_save[0] = key_save
+
+                # FOR 2ND LEVEL KEYWORD
+                elif key_ref in ibis_ref[pre_key_ref[0]].keys():
+                    level = 1
+                    if key_ref in ibis[pre_key_save[0]].keys():
+                        key_iter[1] += 1
+                        key_save = key_ref + str(key_iter[1])
+                    else:
+                        key_save = key_ref
+                    ibis[pre_key_save[0]][key_save] = {}
+                    ibis[pre_key_save[0]][key_save][key_ref] = val
+                    pre_key_ref[1] = key_ref
+                    pre_key_save[1] = key_save
+
+                # FOR third LEVEL KEYWORD
+                elif key_ref in ibis_ref[pre_key_ref[0]][pre_key_ref[1]].keys():
+                    level = 2
+                    if key_ref in ibis[pre_key_save[0]][pre_key_save[1]].keys():
+                        key_iter[2] += 1
+                        key_save = key_ref + str(key_iter[2])
+                    else:
+                        key_save = key_ref
+                    ibis[pre_key_save[0]][pre_key_save[1]][key_save] = {}
+                    ibis[pre_key_save[0]][pre_key_save[1]][key_save][key_ref] = val
+                    pre_key_ref[2] = key_ref
+                    pre_key_save[2] = key_save
+
+                # FOR 4TH LEVEL KEYWORD
+                elif key_ref in ibis_ref[pre_key_ref[0]][pre_key_ref[1]][pre_key_ref[2]].keys():
+                    level = 3
+                    if key_ref in ibis[pre_key_save[0]][pre_key_save[1]][pre_key_save[2]].keys():
+                        key_iter[3] += 1
+                        key_save = key_ref + str(key_iter[3])
+                    else:
+                        key_save = key_ref
+                    ibis[pre_key_save[0]][pre_key_save[1]][pre_key_save[2]][key_save] = {}
+                    ibis[pre_key_save[0]][pre_key_save[1]][pre_key_save[2]][key_save][key_ref] = val
+                    pre_key_ref[3] = key_ref
+                    pre_key_save[3] = key_save
+
+                else:
+                    logger.error(f"Invalid IBIS Keyword : {key}")
+                    return False
+
+            # ALREADY FIND OUT KEYWORD
+            else:
+                # IF NOT BLANK LINE
+                if not line.strip() == "":
+                    # FOR TOP LEVEL KEYWORD
+                    if level == 0:
+                        ibis[pre_key_save[0]][key_ref] += "\n" + line.strip()
+
+                    elif level == 1:
+                        ibis[pre_key_save[0]][pre_key_save[1]][key_ref] += "\n" + line.strip()
+
+                    elif level == 2:
+                        ibis[pre_key_save[0]][pre_key_save[1]][pre_key_save[2]][key_ref] += "\n" + line.strip()
+
+                    elif level == 3:
+                        ibis[pre_key_save[0]][pre_key_save[1]][pre_key_save[2]][pre_key_save[3]][key_ref] += (
+                            "\n" + line.strip()
+                        )
+    except Exception:
+        logger.error(traceback.format_exc())
+        return False
+
+    # RETURN IBIS PARSING RESULT
+    return ibis

@@ -1,0 +1,631 @@
+# -*- coding: utf-8 -*-
+#
+# Copyright (C) 2021 - 2026 Synopsys, Inc. and ANSYS, Inc. All rights reserved.
+# SPDX-License-Identifier: MIT
+#
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+from enum import Enum
+
+from ansys.aedt.core.emit_core.nodes.emit_node import EmitNode
+from ansys.aedt.core.internal.checks import min_aedt_version
+
+
+class RxMixerProductNode(EmitNode):
+    """Provide rx mixer product node."""
+
+    def __init__(self, emit_obj, result_id, node_id) -> None:
+        EmitNode.__init__(self, emit_obj, result_id, node_id)
+        self._is_component = False
+
+    @property
+    @min_aedt_version("2025.2")
+    def parent(self) -> EmitNode:
+        """The parent of this emit node.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> radio = app.schematic.create_component("New Radio")
+        >>> band = radio.children[0]
+        >>> rx_profile = band.children[1]
+        >>> mixer_products = rx_profile.add_mixer_products()
+        >>> mixer_products.parent
+
+        """
+        return self._parent
+
+    @property
+    @min_aedt_version("2025.2")
+    def node_type(self) -> str:
+        """The type of this emit node.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> radio = app.schematic.create_component("New Radio")
+        >>> band = radio.children[0]
+        >>> rx_profile = band.children[1]
+        >>> mixer_products = rx_profile.add_mixer_products()
+        >>> mixer_products.node_type
+
+        """
+        return self._node_type
+
+    @min_aedt_version("2025.2")
+    def import_csv_file(self, file_name: str) -> EmitNode:
+        """Import a CSV File....
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> radio = app.schematic.create_component("New Radio")
+        >>> band = radio.children[0]
+        >>> rx_profile = band.children[1]
+        >>> mixer_products = rx_profile.add_mixer_products()
+        >>> mixer_products.import_csv_file("C:\\EMIT\\data.csv")
+
+        """
+        return self._import(file_name, "CsvFile")
+
+    @min_aedt_version("2027.1")
+    def export_to_csv(self, file_name: str) -> str:
+        """Export's the data for this node"""
+        return self._export_to_csv(file_name, "", "")
+
+    @min_aedt_version("2027.1")
+    def plot(self):
+        """Bring up a Cartesian plot for this node"""
+        return self._plot("", "")
+
+    @min_aedt_version("2025.2")
+    def delete(self) -> None:
+        """Delete this node.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> radio = app.schematic.create_component("New Radio")
+        >>> band = radio.children[0]
+        >>> rx_profile = band.children[1]
+        >>> mixer_products = rx_profile.add_mixer_products()
+        >>> mixer_products.delete()
+
+        """
+        self._delete()
+
+    @property
+    @min_aedt_version("2025.2")
+    def table_data(self) -> list[tuple]:
+        """Edit Mixer Products Table.
+        Table consists of 3 columns.
+        RF Harmonic Order:
+            Value should be between -100 and 100.
+        LO Harmonic Order:
+            Value should be between 1 and 100.
+        Power (Relative or Absolute):
+            Value should be between -1000 and 1000.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> radio = app.schematic.create_component("New Radio")
+        >>> band = radio.children[0]
+        >>> rx_profile = band.children[1]
+        >>> mixer_products = rx_profile.add_mixer_products()
+        >>> mixer_products.table_data = [(2, 25.0)]
+
+        """
+        return self._get_table_data()
+
+    @table_data.setter
+    @min_aedt_version("2025.2")
+    def table_data(self, value: list[tuple]) -> None:
+        self._set_table_data(value)
+
+    @property
+    @min_aedt_version("2025.2")
+    def enabled(self) -> bool:
+        """Enabled state for this node.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> radio = app.schematic.create_component("New Radio")
+        >>> band = radio.children[0]
+        >>> rx_profile = band.children[1]
+        >>> mixer_products = rx_profile.add_mixer_products()
+        >>> mixer_products.enabled = True
+
+        """
+        return self._get_property("Enabled") == "true"
+
+    @enabled.setter
+    @min_aedt_version("2025.2")
+    def enabled(self, value: bool) -> None:
+        self._set_property("Enabled", f"{str(value).lower()}")
+
+    class MixerProductTaperOption(Enum):
+        CONSTANT = "Constant"
+        MIL_STD_461G = "MIL-STD-461G"
+        DUFF_MODEL = "Duff Model"
+
+    @property
+    @min_aedt_version("2025.2")
+    def mixer_product_taper(self) -> MixerProductTaperOption:
+        """Taper for setting amplitude of mixer products.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> radio = app.schematic.create_component("New Radio")
+        >>> band = radio.children[0]
+        >>> rx_profile = band.children[1]
+        >>> mixer_products = rx_profile.add_mixer_products()
+        >>> mixer_products.mixer_product_taper = RxMixerProductNode.MixerProductTaperOption.CONSTANT
+
+        """
+        val = self._get_property("Mixer Product Taper")
+        try:
+            val = self.MixerProductTaperOption(val)
+        except ValueError:
+            val = self.MixerProductTaperOption[val.upper()]
+        return val
+
+    @mixer_product_taper.setter
+    @min_aedt_version("2025.2")
+    def mixer_product_taper(self, value: MixerProductTaperOption) -> None:
+        self._set_property("Mixer Product Taper", f"{value.value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def mixer_product_susceptibility(self) -> float:
+        """Mixer product amplitudes (relative to the in-band susceptibility).
+
+        Value should be between -200 and 200.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> radio = app.schematic.create_component("New Radio")
+        >>> band = radio.children[0]
+        >>> rx_profile = band.children[1]
+        >>> mixer_products = rx_profile.add_mixer_products()
+        >>> mixer_products.mixer_product_taper = RxMixerProductNode.MixerProductTaperOption.CONSTANT
+        >>> mixer_products.mixer_product_susceptibility = 60
+
+        """
+        val = self._get_property("Mixer Product Susceptibility")
+        return float(val)
+
+    @mixer_product_susceptibility.setter
+    @min_aedt_version("2025.2")
+    def mixer_product_susceptibility(self, value: float) -> None:
+        self._set_property("Mixer Product Susceptibility", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def spurious_rejection(self) -> float:
+        """Mixer product amplitudes (relative to the in-band susceptibility).
+
+        Value should be between -200 and 200.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> radio = app.schematic.create_component("New Radio")
+        >>> band = radio.children[0]
+        >>> rx_profile = band.children[1]
+        >>> mixer_products = rx_profile.add_mixer_products()
+        >>> mixer_products.spurious_rejection = 60
+
+        """
+        val = self._get_property("Spurious Rejection")
+        return float(val)
+
+    @spurious_rejection.setter
+    @min_aedt_version("2025.2")
+    def spurious_rejection(self, value: float) -> None:
+        self._set_property("Spurious Rejection", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def minimum_tuning_frequency(self) -> float:
+        """Minimum tuning frequency of Rx's local oscillator.
+
+        Value should be between 1 and 100e9.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> radio = app.schematic.create_component("New Radio")
+        >>> band = radio.children[0]
+        >>> rx_profile = band.children[1]
+        >>> mixer_products = rx_profile.add_mixer_products()
+        >>> mixer_products.mixer_product_taper = RxMixerProductNode.MixerProductTaperOption.MIL_STD_461G
+        >>> mixer_products.minimum_tuning_frequency = 90e6
+
+        """
+        val = self._get_property("Minimum Tuning Frequency")
+        val = self._convert_from_internal_units(float(val), "Freq")
+        return float(val)
+
+    @minimum_tuning_frequency.setter
+    @min_aedt_version("2025.2")
+    def minimum_tuning_frequency(self, value: float | str) -> None:
+        value = self._convert_to_internal_units(value, "Freq")
+        self._set_property("Minimum Tuning Frequency", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def maximum_tuning_frequency(self) -> float:
+        """Maximum tuning frequency of Rx's local oscillator.
+
+        Value should be between 1 and 100e9.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> radio = app.schematic.create_component("New Radio")
+        >>> band = radio.children[0]
+        >>> rx_profile = band.children[1]
+        >>> mixer_products = rx_profile.add_mixer_products()
+        >>> mixer_products.mixer_product_taper = RxMixerProductNode.MixerProductTaperOption.MIL_STD_461G
+        >>> mixer_products.maximum_tuning_frequency = 110e6
+
+        """
+        val = self._get_property("Maximum Tuning Frequency")
+        val = self._convert_from_internal_units(float(val), "Freq")
+        return float(val)
+
+    @maximum_tuning_frequency.setter
+    @min_aedt_version("2025.2")
+    def maximum_tuning_frequency(self, value: float | str) -> None:
+        value = self._convert_to_internal_units(value, "Freq")
+        self._set_property("Maximum Tuning Frequency", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def mixer_product_slope(self) -> float:
+        """Mixer Product Slope.
+
+        Rate of decrease for amplitude of Rx's local oscillator harmonics
+        (dB/decade).
+
+        Value should be between 0 and 100.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> radio = app.schematic.create_component("New Radio")
+        >>> band = radio.children[0]
+        >>> rx_profile = band.children[1]
+        >>> mixer_products = rx_profile.add_mixer_products()
+        >>> mixer_products.mixer_product_taper = RxMixerProductNode.MixerProductTaperOption.DUFF_MODEL
+        >>> mixer_products.mixer_product_slope = 35
+
+        """
+        val = self._get_property("Mixer Product Slope")
+        return float(val)
+
+    @mixer_product_slope.setter
+    @min_aedt_version("2025.2")
+    def mixer_product_slope(self, value: float) -> None:
+        self._set_property("Mixer Product Slope", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def mixer_product_intercept(self) -> float:
+        """Mixer product intercept (dBc).
+
+        Value should be between 0 and 100.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> radio = app.schematic.create_component("New Radio")
+        >>> band = radio.children[0]
+        >>> rx_profile = band.children[1]
+        >>> mixer_products = rx_profile.add_mixer_products()
+        >>> mixer_products.mixer_product_taper = RxMixerProductNode.MixerProductTaperOption.DUFF_MODEL
+        >>> mixer_products.mixer_product_intercept = 75
+
+        """
+        val = self._get_property("Mixer Product Intercept")
+        return float(val)
+
+    @mixer_product_intercept.setter
+    @min_aedt_version("2025.2")
+    def mixer_product_intercept(self, value: float) -> None:
+        self._set_property("Mixer Product Intercept", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def bandwidth_80_db(self) -> float:
+        """Bandwidth 80 dB.
+
+        Bandwidth where Rx's susceptibility envelope is 80 dB above in-band
+        susceptibility level.
+
+        Value should be greater than 1.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> radio = app.schematic.create_component("New Radio")
+        >>> band = radio.children[0]
+        >>> rx_profile = band.children[1]
+        >>> mixer_products = rx_profile.add_mixer_products()
+        >>> mixer_products.mixer_product_taper = RxMixerProductNode.MixerProductTaperOption.MIL_STD_461G
+        >>> mixer_products.bandwidth_80_db = 1.0e6
+
+        """
+        val = self._get_property("Bandwidth 80 dB")
+        val = self._convert_from_internal_units(float(val), "Freq")
+        return float(val)
+
+    @bandwidth_80_db.setter
+    @min_aedt_version("2025.2")
+    def bandwidth_80_db(self, value: float | str) -> None:
+        value = self._convert_to_internal_units(value, "Freq")
+        self._set_property("Bandwidth 80 dB", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def image_rejection(self) -> float:
+        """Image frequency amplitude (relative to the in-band susceptibility).
+
+        Value should be between -200 and 200.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> radio = app.schematic.create_component("New Radio")
+        >>> band = radio.children[0]
+        >>> rx_profile = band.children[1]
+        >>> mixer_products = rx_profile.add_mixer_products()
+        >>> mixer_products.image_rejection = 60
+
+        """
+        val = self._get_property("Image Rejection")
+        return float(val)
+
+    @image_rejection.setter
+    @min_aedt_version("2025.2")
+    def image_rejection(self, value: float) -> None:
+        self._set_property("Image Rejection", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def maximum_rf_harmonic_order(self) -> int:
+        """Maximum order of RF frequency.
+
+        Value should be between 1 and 100.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> radio = app.schematic.create_component("New Radio")
+        >>> band = radio.children[0]
+        >>> rx_profile = band.children[1]
+        >>> mixer_products = rx_profile.add_mixer_products()
+        >>> mixer_products.maximum_rf_harmonic_order = 3
+
+        """
+        val = self._get_property("Maximum RF Harmonic Order")
+        return int(val)
+
+    @maximum_rf_harmonic_order.setter
+    @min_aedt_version("2025.2")
+    def maximum_rf_harmonic_order(self, value: int) -> None:
+        self._set_property("Maximum RF Harmonic Order", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def maximum_lo_harmonic_order(self) -> int:
+        """Maximum order of the LO frequency.
+
+        Value should be between 1 and 100.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> radio = app.schematic.create_component("New Radio")
+        >>> band = radio.children[0]
+        >>> rx_profile = band.children[1]
+        >>> mixer_products = rx_profile.add_mixer_products()
+        >>> mixer_products.maximum_lo_harmonic_order = 3
+
+        """
+        val = self._get_property("Maximum LO Harmonic Order")
+        return int(val)
+
+    @maximum_lo_harmonic_order.setter
+    @min_aedt_version("2025.2")
+    def maximum_lo_harmonic_order(self, value: int) -> None:
+        self._set_property("Maximum LO Harmonic Order", f"{value}")
+
+    class MixingModeOption(Enum):
+        LO_ABOVE_TUNED_RF_FREQUENCY = "AboveTunedFrequency"
+        LO_BELOW_TUNED_RF_FREQUENCY = "BelowTunedFrequency"
+        LO_ABOVEBELOW_TUNED_RF_FREQUENCY = "BothTunedFrequencies"
+
+    @property
+    @min_aedt_version("2025.2")
+    def mixing_mode(self) -> MixingModeOption:
+        """Specifies whether the IF frequency is > or < RF channel frequency.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> radio = app.schematic.create_component("New Radio")
+        >>> band = radio.children[0]
+        >>> rx_profile = band.children[1]
+        >>> mixer_products = rx_profile.add_mixer_products()
+        >>> mixer_products.mixing_mode = RxMixerProductNode.MixingModeOption.LO_BELOW_TUNED_RF_FREQUENCY
+
+        """
+        val = self._get_property("Mixing Mode")
+        try:
+            val = self.MixingModeOption(val)
+        except ValueError:
+            val = self.MixingModeOption[val.upper()]
+        return val
+
+    @mixing_mode.setter
+    @min_aedt_version("2025.2")
+    def mixing_mode(self, value: MixingModeOption) -> None:
+        self._set_property("Mixing Mode", f"{value.value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def first_if_frequency(self) -> str:
+        """Intermediate frequency for Rx's 1st conversion stage.
+
+        Value should be a mathematical expression.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> radio = app.schematic.create_component("New Radio")
+        >>> band = radio.children[0]
+        >>> rx_profile = band.children[1]
+        >>> mixer_products = rx_profile.add_mixer_products()
+        >>> mixer_products.first_if_frequency = "0.0"
+
+        """
+        val = self._get_property("First IF Frequency")
+        return val
+
+    @first_if_frequency.setter
+    @min_aedt_version("2025.2")
+    def first_if_frequency(self, value: str) -> None:
+        self._set_property("First IF Frequency", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def rf_transition_frequency(self) -> float:
+        """RF Frequency Transition point.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> radio = app.schematic.create_component("New Radio")
+        >>> band = radio.children[0]
+        >>> rx_profile = band.children[1]
+        >>> mixer_products = rx_profile.add_mixer_products()
+        >>> mixer_products.mixing_mode = RxMixerProductNode.MixingModeOption.LO_ABOVEBELOW_TUNED_RF_FREQUENCY
+        >>> mixer_products.rf_transition_frequency = 100e6
+
+        """
+        val = self._get_property("RF Transition Frequency")
+        val = self._convert_from_internal_units(float(val), "Freq")
+        return float(val)
+
+    @rf_transition_frequency.setter
+    @min_aedt_version("2025.2")
+    def rf_transition_frequency(self, value: float | str) -> None:
+        value = self._convert_to_internal_units(value, "Freq")
+        self._set_property("RF Transition Frequency", f"{value}")
+
+    class UseHighLOOption(Enum):
+        ABOVE_TRANSITION_FREQUENCY = "AboveTransition"
+        BELOW_TRANSITION_FREQUENCY = "BelowTransition"
+
+    @property
+    @min_aedt_version("2025.2")
+    def use_high_lo(self) -> UseHighLOOption:
+        """Use High LO above/below the transition frequency.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> radio = app.schematic.create_component("New Radio")
+        >>> band = radio.children[0]
+        >>> rx_profile = band.children[1]
+        >>> mixer_products = rx_profile.add_mixer_products()
+        >>> mixer_products.mixing_mode = RxMixerProductNode.MixingModeOption.LO_ABOVEBELOW_TUNED_RF_FREQUENCY
+        >>> mixer_products.use_high_lo = RxMixerProductNode.UseHighLOOption.ABOVE_TRANSITION_FREQUENCY
+
+        """
+        val = self._get_property("Use High LO")
+        try:
+            val = self.UseHighLOOption(val)
+        except ValueError:
+            val = self.UseHighLOOption[val.upper()]
+        return val
+
+    @use_high_lo.setter
+    @min_aedt_version("2025.2")
+    def use_high_lo(self, value: UseHighLOOption) -> None:
+        self._set_property("Use High LO", f"{value.value}")
+
+    class MixerProductTableUnitsOption(Enum):
+        ABSOLUTE = "Absolute"
+        RELATIVE = "Relative"
+
+    @property
+    @min_aedt_version("2025.2")
+    def mixer_product_table_units(self) -> MixerProductTableUnitsOption:
+        """Specifies the units for the Mixer Products.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> radio = app.schematic.create_component("New Radio")
+        >>> band = radio.children[0]
+        >>> rx_profile = band.children[1]
+        >>> mixer_products = rx_profile.add_mixer_products()
+        >>> mixer_products.mixer_product_table_units = RxMixerProductNode.MixerProductTableUnitsOption.ABSOLUTE
+
+        """
+        val = self._get_property("Mixer Product Table Units")
+        try:
+            val = self.MixerProductTableUnitsOption(val)
+        except ValueError:
+            val = self.MixerProductTableUnitsOption[val.upper()]
+        return val
+
+    @mixer_product_table_units.setter
+    @min_aedt_version("2025.2")
+    def mixer_product_table_units(self, value: MixerProductTableUnitsOption) -> None:
+        self._set_property("Mixer Product Table Units", f"{value.value}")

@@ -1,0 +1,2 @@
+[console_scripts]
+pyaedt = ansys.aedt.core.cli:app

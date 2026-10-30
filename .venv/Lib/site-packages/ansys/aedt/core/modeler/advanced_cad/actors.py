@@ -1,0 +1,561 @@
+# -*- coding: utf-8 -*-
+#
+# Copyright (C) 2021 - 2026 Synopsys, Inc. and ANSYS, Inc. All rights reserved.
+# SPDX-License-Identifier: MIT
+#
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from ansys.aedt.core.base import PyAedtBase
+from ansys.aedt.core.generic.file_utils import read_json
+from ansys.aedt.core.generic.general_methods import pyaedt_function_handler
+
+if TYPE_CHECKING:
+    from ansys.aedt.core.hfss import Hfss
+from ansys.aedt.core.modeler.advanced_cad.multiparts import Actor
+from ansys.aedt.core.modeler.advanced_cad.multiparts import MultiPartComponent
+
+
+def read_actors(fn: str, actor_lib: str) -> dict:
+    """Read and map actors in a JSON file to a list of actor objects.
+
+    Parameters
+    ----------
+    fn : str | Path
+        Name of the JSON file describing the actors.
+    actor_lib : str
+        Full path to the library containing the actor definitions.
+
+    Returns
+    -------
+    list
+        List of actor objects.
+
+    Examples
+    --------
+    >>> from ansys.aedt.core.modeler.advanced_cad.actors import read_actors
+    >>> read_actors(r"C:\\temp\\actors.json", r"C:\\temp\\actors")
+
+    """
+    a = {}
+    actor_dict = read_json(fn)
+    for name in actor_dict:
+        a[name] = Actor(actor_dict[name], actor_lib, name)
+    return a
+
+
+class Generic(Actor, PyAedtBase):
+    """Provides an instance of an actor.
+
+    This class is derived from :class:`ansys.aedt.core.modeler.multiparts.MultiPartComponent`.
+
+    .. note::
+       Motion is always forward in the X-axis direction of the person
+       coordinate system.
+
+    Parameters
+    ----------
+    actor_folder : str
+        Full path to the directory containing the definition of the person.
+        This can be changed later in the :class:`Person` class definition.
+    speed : float or str
+        Speed of the person in the X-axis direction.
+    relative_cs_name : str
+        Name of the relative coordinate system of the actor. The default is ``None``,
+        in which case the global coordinate system is used.
+
+    Examples
+    --------
+    >>> from ansys.aedt.core.modeler.advanced_cad.actors import Generic
+    >>> actor = Generic(r"C:\\temp\\actors\\generic")
+
+    """
+
+    def __init__(self, actor_folder, speed: str = "0", relative_cs_name=None) -> None:
+        """Generic class."""
+        super(Generic, self).__init__(actor_folder, speed=speed, relative_cs_name=relative_cs_name)
+
+
+class Person(Actor, PyAedtBase):
+    """Provides an instance of a person.
+
+    This class is derived from :class:`ansys.aedt.core.modeler.multiparts.MultiPartComponent`.
+
+    .. note::
+       Motion is always forward in the X-axis direction of the person coordinate system.
+
+    Parameters
+    ----------
+    actor_folder : str
+        Full path to the folder containing the definition of the
+        person. This can be changed later in the :class:`Person`
+        class definition.
+    speed : float or str, optional
+        Speed of the person in the X-axis direction. The default is ``"0"``.
+    stride : float or str, optional
+        Stride length of the person. The default is "0.8meters".
+    relative_cs_name : str, optional
+        Name of the relative coordinate system of the actor. The
+        default is ``None``, in which case the global coordinate
+        system is used.
+
+    Examples
+    --------
+    >>> from ansys.aedt.core.modeler.advanced_cad.actors import Person
+    >>> person = Person(r"C:\\temp\\actors\\person", speed="1m_per_sec", stride="0.8meters")
+    >>> person.stride
+    '0.8meters'
+
+    """
+
+    def __init__(self, actor_folder, speed: str = "0", stride: str = "0.8meters", relative_cs_name=None) -> None:
+        """Initialize person actor."""
+        super(Person, self).__init__(actor_folder, speed=speed, relative_cs_name=relative_cs_name)
+
+        self._stride = stride
+
+    @property
+    def stride(self) -> str:
+        """Stride in meters.
+
+        Returns
+        -------
+        str
+            Stride value.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.advanced_cad.actors import Person
+        >>> person = Person(r"C:\\temp\\actors\\person")
+        >>> person.stride
+        '0.8meters'
+
+        """
+        return self._stride
+
+    @stride.setter
+    def stride(self, s: str) -> None:
+        self._stride = s  # TODO: Add validation to allow expressions.
+
+    @pyaedt_function_handler()
+    def _add_walking(self, app):
+        # Update expressions for oscillation of limbs. At this point
+        # we could parse p.name to handle motion (arm, leg, ...).
+        for k, p in self.parts.items():
+            if any(p.rot_axis):  # use this key to determine if there is motion of the part.
+                if p.rot_axis[1]:  # Make sure pitch rotation is True
+                    app[p.pitch_name] = (
+                        p.pitch
+                        + "*sin(2*pi*("
+                        + self.speed_name
+                        + "/"
+                        + self.stride
+                        + ") "
+                        + "*"
+                        + MultiPartComponent._t
+                        + ") + "
+                        + "("
+                        + p["compensation_angle"]
+                        + ")rad"
+                    )
+
+    @pyaedt_function_handler()
+    def insert(self, app: "Hfss", motion: bool = True) -> bool:
+        """Insert the person in HFSS SBR+.
+
+        Parameters
+        ----------
+        app : Hfss
+            HFSS application instance.
+        motion : bool, optional
+            Whether the person is in motion. The default is ``True``.
+
+        Returns
+        -------
+        bool
+            ``True`` when successful, ``False`` when failed.
+
+        Examples
+        --------
+        >>> import ansys.aedt.core as pyaedt
+        >>> from ansys.aedt.core.modeler.advanced_cad.actors import Person
+        >>> hfss = pyaedt.Hfss()
+        >>> person = Person(r"C:\\temp\\actors\\person")
+        >>> person.insert(app=hfss)
+
+        """
+        app.logger.info("Adding person: " + self.name)
+
+        # Insert the component first, then set variables.
+        self._insert(app)  # Place the person in the app.
+        if motion:
+            self._add_speed(app)
+            self._add_walking(app)
+        return True
+
+
+class Bird(Actor, PyAedtBase):
+    """Provides an instance of a bird.
+
+    This class is derived from :class:`ansys.aedt.core.modeler.multiparts.MultiPartComponent`.
+
+    .. note::
+       Motion is always forward in the X-axis direction.
+
+    Parameters
+    ----------
+    bird_folder : str
+        Full path to the directory containing the definition of the
+        bird. This can be changed later.
+    speed : float or str, optional
+        Speed of the bird. The default is ``"2.0"``.
+    flapping_rate : float or str, optional
+        Flapping rate. The default is ``"50Hz"``.
+    relative_cs_name : str, optional
+        Name of the relative coordinate system of the actor. The
+        default is``None``, in which case the global coordinate system
+        is used.
+
+    Examples
+    --------
+    >>> from ansys.aedt.core.modeler.advanced_cad.actors import Bird
+    >>> bird = Bird(r"C:\\temp\\actors\\bird", speed="2.0", flapping_rate="50Hz")
+    >>> bird
+
+    """
+
+    def __init__(self, bird_folder, speed: str = "2.0", flapping_rate: str = "50Hz", relative_cs_name=None) -> None:
+        """Bike class."""
+        super(Bird, self).__init__(bird_folder, speed=speed, relative_cs_name=relative_cs_name)
+        self._flapping_rate = flapping_rate
+
+    def _add_flying(self, app):
+        # Update expressions for wheel motion:
+
+        for k, p in self.parts.items():
+            if any(p.rot_axis):  # use this key to verify that there is local motion.
+                if p.rot_axis[2]:  # Flapping is roll
+                    app[p.roll_name] = (
+                        p["rotation"] + "* sin(2*pi*" + str(self._flapping_rate) + "*" + MultiPartComponent._t + ")"
+                    )
+
+    @pyaedt_function_handler()
+    def insert(self, app: "Hfss", motion: bool = True) -> bool:
+        """Insert the bird in HFSS SBR+.
+
+        Parameters
+        ----------
+        app : Hfss
+        motion : bool
+            Whether the bird is in motion. The default is ``True``.
+
+        Returns
+        -------
+        bool
+            ``True`` when successful, ``False`` when failed.
+
+        Examples
+        --------
+        >>> import ansys.aedt.core as pyaedt
+        >>> from ansys.aedt.core.modeler.advanced_cad.actors import Bird
+        >>> hfss = pyaedt.Hfss()
+        >>> bird = Bird(r"C:\\temp\\actors\\bird")
+        >>> bird.insert(app=hfss)
+
+        """
+        app.logger.info("Adding Vehicle: " + self.name)
+
+        self._insert(app)  # Place the multipart component in the app.
+        if motion:
+            self._add_speed(app)
+            self._add_flying(app)
+        return True
+
+
+class Vehicle(Actor, PyAedtBase):
+    """Provides an instance of a vehicle.
+
+    This class is derived from :class:`ansys.aedt.core.modeler.multiparts.MultiPartComponent`.
+
+    .. note::
+        Motion is always forward in the X-axis direction.
+
+    Parameters
+    ----------
+    car_folder : str, required
+        Full path to the folder containing the definition of the
+        vehicle.  This can be changed later.
+    speed : float or str, optional
+        Speed of the vehicle. The default is ``10.0``.
+    relative_cs_name : str, optional
+        Name of the relative coordinate system of the actor. The
+        default is ``None``, in which case the global coordinate
+        system is used.
+
+    Examples
+    --------
+    >>> from ansys.aedt.core.modeler.advanced_cad.actors import Vehicle
+    >>> vehicle = Vehicle(r"C:\\temp\\actors\\vehicle", speed=10.0)
+    >>> vehicle
+
+    """
+
+    def __init__(self, car_folder, speed: float = 10.0, relative_cs_name=None) -> None:
+        """Vehicle class."""
+        super(Vehicle, self).__init__(car_folder, speed=speed, relative_cs_name=relative_cs_name)
+
+    @pyaedt_function_handler()
+    def _add_driving(self, app):
+        # Update expressions for wheel motion:
+        for k, p in self.parts.items():
+            if any(p.rot_axis):  # use this key to determine if there is motion of the wheel.
+                if p.rot_axis[1]:  # Make sure pitch rotation is True
+                    app[p.pitch_name] = (
+                        "("
+                        + MultiPartComponent._t
+                        + "*"
+                        + self.speed_name
+                        + "/"
+                        + p["tire_radius"]
+                        + "meter)*(180/pi)*1deg"
+                    )
+
+    @pyaedt_function_handler()
+    def insert(self, app: "Hfss", motion: bool = True) -> bool:
+        """Insert the vehicle in HFSS SBR+.
+
+        Parameters
+        ----------
+        app : Hfss
+        motion : bool, optional
+            Whether the vehicle is in motion. The default is ``True``.
+
+        Returns
+        -------
+        bool
+            ``True`` when successful, ``False`` when failed.
+
+        Examples
+        --------
+        >>> import ansys.aedt.core as pyaedt
+        >>> from ansys.aedt.core.modeler.advanced_cad.actors import Vehicle
+        >>> hfss = pyaedt.Hfss()
+        >>> vehicle = Vehicle(r"C:\\temp\\actors\\vehicle")
+        >>> vehicle.insert(app=hfss)
+
+        """
+        app.logger.info("Adding vehicle: " + self.name)
+
+        self._insert(app)  # Place the multipart component in the app.
+        if motion:
+            self._add_speed(app)
+            self._add_driving(app)
+        return True
+
+
+class Radar(MultiPartComponent, PyAedtBase):
+    """Manages the radar definition and placement in the HFSS design.
+
+    Parameters
+    ----------
+    radar_folder : str
+        Full path to the folder containing the radar file.
+    name : str, optional
+        Name of the radar file. The default is ``None``.
+    motion : bool, optional
+        Whether the actor is in motion. The default is ``False``.
+    use_relative_cs : bool, optional
+        Whether to use the relative coordinate system. The default is ``False``.
+    offset : list, optional
+        List of offset values. The default is ``("0", "0", "0")``.
+    speed : float or str, optional
+        Speed of the vehicle. The default is ``0``.
+    relative_cs_name : str, optional
+        Name of the relative coordinate system of the actor. The
+        default is ``None``, in which case the global coordinate
+        system is used.
+
+    Examples
+    --------
+    >>> from ansys.aedt.core.modeler.advanced_cad.actors import Radar
+    >>> radar = Radar(r"C:\\temp\\actors\\radar", name="radar1", speed=10)
+    >>> radar.speed_name
+    'radar1_speed'
+
+    """
+
+    def __init__(
+        self,
+        radar_folder,
+        name: str | None = None,
+        motion: bool = False,
+        use_relative_cs: bool = False,
+        offset=("0", "0", "0"),
+        speed: int = 0,
+        relative_cs_name=None,
+    ) -> None:
+        self.aedt_antenna_names = []  # List of Antenna Names
+        name = name.split(".")[0] if name else name  # remove suffix if any
+        self._component_class = "radar"
+        super(Radar, self).__init__(
+            radar_folder,
+            name=name,
+            use_relative_cs=use_relative_cs,
+            motion=motion,
+            offset=offset,
+            relative_cs_name=relative_cs_name,
+        )
+        self._speed_expression = str(speed) + "m_per_sec"
+        self.pair = []
+
+    @property
+    def units(self) -> str | None:
+        """Multi-part units.
+
+        Returns
+        -------
+        str
+            Multipart units.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.advanced_cad.actors import Radar
+        >>> radar = Radar(r"C:\\temp\\actors\\radar")
+        >>> radar.units
+        'mm'
+
+        """
+        return self._local_units
+
+    @property
+    def speed_name(self) -> str:
+        """Speed variable name.
+
+        Returns
+        -------
+        str
+            Name of the speed variable.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.advanced_cad.actors import Radar
+        >>> radar = Radar(r"C:\\temp\\actors\\radar", name="radar1")
+        >>> radar.speed_name
+        'radar1_speed'
+
+        """
+        return self.name + "_speed"
+
+    @property
+    def speed_expression(self) -> str:
+        """Speed variable expression.
+
+        Returns
+        -------
+        str
+            Expression for the speed variable.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.advanced_cad.actors import Radar
+        >>> radar = Radar(r"C:\\temp\\actors\\radar", speed=10)
+        >>> radar.speed_expression
+        '10m_per_sec'
+
+        """
+        return self._speed_expression
+
+    @speed_expression.setter
+    def speed_expression(self, s: str) -> None:
+        self._speed_expression = s
+
+    @pyaedt_function_handler()
+    def _add_speed(self, app):
+        app.variable_manager.set_variable(
+            name=self.speed_name, expression=self.speed_expression, description="radar speed"
+        )
+        # Update expressions for x and y position in app:
+        app[self.offset_names[0]] = (
+            str(self.offset[0]) + "+" + self.speed_name + " * " + MultiPartComponent._t + "* cos(" + self.yaw_name + ")"
+        )
+
+        app[self.offset_names[1]] = (
+            str(self.offset[1]) + "+" + self.speed_name + " * " + MultiPartComponent._t + "* sin(" + self.yaw_name + ")"
+        )
+
+    @pyaedt_function_handler()
+    def insert(self, app: "Hfss", motion: bool = False) -> list:
+        """Insert radar in the HFSS application instance.
+
+        Parameters
+        ----------
+        app : Hfss
+        motion : bool, optional
+            Whether the actor is in motion. The default is ``False``.
+
+        Returns
+        -------
+        list
+            List of antennae that have been placed.
+
+        Examples
+        --------
+        >>> import ansys.aedt.core as pyaedt
+        >>> from ansys.aedt.core.modeler.advanced_cad.actors import Radar
+        >>> hfss = pyaedt.Hfss()
+        >>> radar = Radar(r"C:\\temp\\actors\\radar")
+        >>> radar.insert(app=hfss)
+
+        """
+        app.logger.info("Adding radar module:  " + self.name)
+        if self.use_global_cs or self.cs_name in app.modeler.oeditor.GetCoordinateSystems():
+            app.modeler.set_working_coordinate_system(self.cs_name)
+            if self.use_relative_cs:
+                self._relative_cs_name = self.name + "_cs"
+        self.position_in_app(app)
+        tx_names = []
+        rx_names = []
+        for p in self.parts:
+            antenna_object = self.parts[p].insert(app, units=self._local_units)
+            self.aedt_components.append(antenna_object.name)
+            self.aedt_antenna_names.append(antenna_object.excitation_name)
+            if p.startswith("tx"):
+                tx_names.append(antenna_object.excitation_name)
+            elif p.startswith("rx"):
+                rx_names.append(antenna_object.excitation_name)
+
+        # Define tx/rx pairs:
+        self.pair = {}
+        for tx in tx_names:
+            rx_string = ""
+            for rx in rx_names:
+                rx_string += rx + ","
+            self.pair[tx] = rx_string.strip(",")
+
+        app.set_sbr_txrx_settings(self.pair)
+
+        app.modeler.create_group(components=self.aedt_components, group_name=self.name)
+        app.logger.info("Group Created:  " + self.name)
+        if motion:
+            self._add_speed(app)
+        return self.aedt_antenna_names

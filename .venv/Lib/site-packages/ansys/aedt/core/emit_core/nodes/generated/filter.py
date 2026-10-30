@@ -1,0 +1,717 @@
+# -*- coding: utf-8 -*-
+#
+# Copyright (C) 2021 - 2026 Synopsys, Inc. and ANSYS, Inc. All rights reserved.
+# SPDX-License-Identifier: MIT
+#
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+from enum import Enum
+
+from ansys.aedt.core.emit_core.nodes.emit_node import EmitNode
+from ansys.aedt.core.internal.checks import min_aedt_version
+
+
+class Filter(EmitNode):
+    """Provide filter."""
+
+    def __init__(self, emit_obj, result_id, node_id) -> None:
+        EmitNode.__init__(self, emit_obj, result_id, node_id)
+        self._is_component = True
+
+    @property
+    @min_aedt_version("2025.2")
+    def node_type(self) -> str:
+        """The type of this emit node.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> filt = app.schematic.create_component("Band Pass")
+        >>> filt.node_type
+
+        """
+        return self._node_type
+
+    @min_aedt_version("2027.1")
+    def export_to_csv(self, file_name: str = "", channel_freq: float = 0.0) -> str:
+        """Export's the data for this node
+
+        Parameters
+        ----------
+        file_name: str[optional]
+            full path to the file to export to.
+        channel_freq: float[optional]
+            tuned channel freq only used for tunable filters
+
+        Returns
+        -------
+        csv_data: str
+            stringified data for the node returned if file_name not specified
+        """
+        keys = "SelectedInputPort|SelectedOutputPort" + "|TestTunableFreq"
+        vals = "1|2" + "|" + f"{channel_freq}"
+        return self._export_to_csv(file_name, keys, vals)
+
+    @min_aedt_version("2027.1")
+    def plot(self, channel_freq: float = 0.0):
+        """Bring up a Cartesian plot for this node
+
+        Parameters
+        ----------
+        channel_freq: float[optional]
+            tuned channel freq only used for tunable filters
+        """
+        keys = "SelectedInputPort|SelectedOutputPort" + "|TestTunableFreq"
+        vals = "1|2" + "|" + f"{channel_freq}"
+        return self._plot(keys, vals)
+
+    @min_aedt_version("2025.2")
+    def duplicate(self, new_name: str = "") -> EmitNode:
+        """Duplicate this node.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> filt = app.schematic.create_component("Band Pass")
+        >>> filt_copy = filt.duplicate("filt_copy")
+
+        """
+        return self._duplicate(new_name)
+
+    @min_aedt_version("2025.2")
+    def delete(self) -> None:
+        """Delete this node.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> filt = app.schematic.create_component("Band Pass")
+        >>> filt.delete()
+
+        """
+        self._delete()
+
+    @property
+    @min_aedt_version("2025.2")
+    def filename(self) -> str:
+        """Name of file defining the outboard component.
+
+        Value should be a full file path.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> filt = app.schematic.create_component("Band Pass")
+        >>> filt.filter_type = Filter.FilterTypeOption.BY_FILE
+        >>> filt.filename = "example_value"
+
+        """
+        val = self._get_property("Filename")
+        return val
+
+    @filename.setter
+    @min_aedt_version("2025.2")
+    def filename(self, value: str) -> None:
+        self._set_property("Filename", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def noise_temperature(self) -> float:
+        """System Noise temperature (K) of the component.
+
+        Value should be between 0 and 1000.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> filt = app.schematic.create_component("Band Pass")
+        >>> filt.noise_temperature = 290.0
+
+        """
+        val = self._get_property("Noise Temperature")
+        return float(val)
+
+    @noise_temperature.setter
+    @min_aedt_version("2025.2")
+    def noise_temperature(self, value: float) -> None:
+        self._set_property("Noise Temperature", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def notes(self) -> str:
+        """Expand to view/edit notes stored with the project.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> filt = app.schematic.create_component("Band Pass")
+        >>> filt.notes = "example_value"
+
+        """
+        val = self._get_property("Notes")
+        return val
+
+    @notes.setter
+    @min_aedt_version("2025.2")
+    def notes(self, value: str) -> None:
+        self._set_property("Notes", f"{value}")
+
+    class FilterTypeOption(Enum):
+        BY_FILE = "ByFile"
+        LOW_PASS = "LowPass"  # nosec
+        HIGH_PASS = "HighPass"  # nosec
+        BAND_PASS = "BandPass"  # nosec
+        BAND_STOP = "BandStop"
+        TUNABLE_BANDPASS = "TunableBandpass"
+        TUNABLE_BANDSTOP = "TunableBandstop"
+
+    @property
+    @min_aedt_version("2025.2")
+    def filter_type(self) -> FilterTypeOption:
+        """Filter Type.
+
+        Type of filter to define. The filter can be defined by file (measured or
+        simulated data) or using one of EMIT's parametric models.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> filt = app.schematic.create_component("Band Pass")
+        >>> filt.filter_type = Filter.FilterTypeOption.BY_FILE
+
+        """
+        val = self._get_property("Filter Type")
+        try:
+            val = self.FilterTypeOption(val)
+        except ValueError:
+            val = self.FilterTypeOption[val.upper()]
+        return val
+
+    @filter_type.setter
+    @min_aedt_version("2025.2")
+    def filter_type(self, value: FilterTypeOption) -> None:
+        self._set_property("Filter Type", f"{value.value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def insertion_loss(self) -> float:
+        """Filter pass band loss.
+
+        Value should be between 0 and 100.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> filt = app.schematic.create_component("Band Pass")
+        >>> filt.filter_type = Filter.FilterTypeOption.LOW_PASS
+        >>> filt.insertion_loss = 0
+
+        """
+        val = self._get_property("Insertion Loss")
+        return float(val)
+
+    @insertion_loss.setter
+    @min_aedt_version("2025.2")
+    def insertion_loss(self, value: float) -> None:
+        self._set_property("Insertion Loss", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def stop_band_attenuation(self) -> float:
+        """Filter stop band loss (attenuation).
+
+        Value should be less than 200.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> filt = app.schematic.create_component("Band Pass")
+        >>> filt.filter_type = Filter.FilterTypeOption.LOW_PASS
+        >>> filt.stop_band_attenuation = 40
+
+        """
+        val = self._get_property("Stop band Attenuation")
+        return float(val)
+
+    @stop_band_attenuation.setter
+    @min_aedt_version("2025.2")
+    def stop_band_attenuation(self, value: float) -> None:
+        self._set_property("Stop band Attenuation", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def max_pass_band(self) -> float:
+        """Maximum pass band frequency.
+
+        Value should be between 1 and 100e9.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> filt = app.schematic.create_component("Band Pass")
+        >>> filt.filter_type = Filter.FilterTypeOption.LOW_PASS
+        >>> filt.max_pass_band = 120e6
+
+        """
+        val = self._get_property("Max Pass Band")
+        val = self._convert_from_internal_units(float(val), "Freq")
+        return float(val)
+
+    @max_pass_band.setter
+    @min_aedt_version("2025.2")
+    def max_pass_band(self, value: float | str) -> None:
+        value = self._convert_to_internal_units(value, "Freq")
+        self._set_property("Max Pass Band", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def min_stop_band(self) -> float:
+        """Minimum stop band frequency.
+
+        Value should be between 1 and 100e9.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> filt = app.schematic.create_component("Band Pass")
+        >>> filt.filter_type = Filter.FilterTypeOption.LOW_PASS
+        >>> filt.min_stop_band = 140e6
+
+        """
+        val = self._get_property("Min Stop Band")
+        val = self._convert_from_internal_units(float(val), "Freq")
+        return float(val)
+
+    @min_stop_band.setter
+    @min_aedt_version("2025.2")
+    def min_stop_band(self, value: float | str) -> None:
+        value = self._convert_to_internal_units(value, "Freq")
+        self._set_property("Min Stop Band", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def max_stop_band(self) -> float:
+        """Maximum stop band frequency.
+
+        Value should be between 1 and 100e9.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> filt = app.schematic.create_component("Band Pass")
+        >>> filt.filter_type = Filter.FilterTypeOption.HIGH_PASS
+        >>> filt.max_stop_band = 60e6
+
+        """
+        val = self._get_property("Max Stop Band")
+        val = self._convert_from_internal_units(float(val), "Freq")
+        return float(val)
+
+    @max_stop_band.setter
+    @min_aedt_version("2025.2")
+    def max_stop_band(self, value: float | str) -> None:
+        value = self._convert_to_internal_units(value, "Freq")
+        self._set_property("Max Stop Band", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def min_pass_band(self) -> float:
+        """Minimum pass band frequency.
+
+        Value should be between 1 and 100e9.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> filt = app.schematic.create_component("Band Pass")
+        >>> filt.filter_type = Filter.FilterTypeOption.HIGH_PASS
+        >>> filt.min_pass_band = 80e6
+
+        """
+        val = self._get_property("Min Pass Band")
+        val = self._convert_from_internal_units(float(val), "Freq")
+        return float(val)
+
+    @min_pass_band.setter
+    @min_aedt_version("2025.2")
+    def min_pass_band(self, value: float | str) -> None:
+        value = self._convert_to_internal_units(value, "Freq")
+        self._set_property("Min Pass Band", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def bp_lower_stop_band(self) -> float:
+        """Bandpass filter lower stop band frequency.
+
+        Value should be between 1 and 100e9.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> filt = app.schematic.create_component("Band Pass")
+        >>> filt.filter_type = Filter.FilterTypeOption.BAND_PASS
+        >>> filt.bp_lower_stop_band = 80e6
+
+        """
+        if int(self._emit_obj.aedt_env_variable[-3:]) < 261:
+            val = self._get_property("Lower Stop Band")
+        else:
+            val = self._get_property("BP Lower Stop Band")
+        val = self._convert_from_internal_units(float(val), "Freq")
+        return float(val)
+
+    @bp_lower_stop_band.setter
+    @min_aedt_version("2025.2")
+    def bp_lower_stop_band(self, value: float | str) -> None:
+        value = self._convert_to_internal_units(value, "Freq")
+        self._set_property("BandPassLowerStopBandFrequency", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def bp_lower_cutoff(self) -> float:
+        """Bandpass filter lower cutoff frequency.
+
+        Value should be between 1 and 100e9.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> filt = app.schematic.create_component("Band Pass")
+        >>> filt.filter_type = Filter.FilterTypeOption.BAND_PASS
+        >>> filt.bp_lower_cutoff = 90e6
+
+        """
+        if int(self._emit_obj.aedt_env_variable[-3:]) < 261:
+            val = self._get_property("Lower Cutoff")
+        else:
+            val = self._get_property("BP Lower Cutoff")
+        val = self._convert_from_internal_units(float(val), "Freq")
+        return float(val)
+
+    @bp_lower_cutoff.setter
+    @min_aedt_version("2025.2")
+    def bp_lower_cutoff(self, value: float | str) -> None:
+        value = self._convert_to_internal_units(value, "Freq")
+        self._set_property("BandPassLowerCutoffFrequency", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def bp_higher_cutoff(self) -> float:
+        """Bandpass filter higher cutoff frequency.
+
+        Value should be between 1 and 100e9.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> filt = app.schematic.create_component("Band Pass")
+        >>> filt.filter_type = Filter.FilterTypeOption.BAND_PASS
+        >>> filt.bp_higher_cutoff = 110e6
+
+        """
+        if int(self._emit_obj.aedt_env_variable[-3:]) < 261:
+            val = self._get_property("Higher Cutoff")
+        else:
+            val = self._get_property("BP Higher Cutoff")
+        val = self._convert_from_internal_units(float(val), "Freq")
+        return float(val)
+
+    @bp_higher_cutoff.setter
+    @min_aedt_version("2025.2")
+    def bp_higher_cutoff(self, value: float | str) -> None:
+        value = self._convert_to_internal_units(value, "Freq")
+        self._set_property("BandPassHigherCutoffFrequency", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def bp_higher_stop_band(self) -> float:
+        """Bandpass filter higher stop band frequency.
+
+        Value should be between 1 and 100e9.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> filt = app.schematic.create_component("Band Pass")
+        >>> filt.filter_type = Filter.FilterTypeOption.BAND_PASS
+        >>> filt.bp_higher_stop_band = 120e6
+
+        """
+        if int(self._emit_obj.aedt_env_variable[-3:]) < 261:
+            val = self._get_property("Higher Stop Band")
+        else:
+            val = self._get_property("BP Higher Stop Band")
+        val = self._convert_from_internal_units(float(val), "Freq")
+        return float(val)
+
+    @bp_higher_stop_band.setter
+    @min_aedt_version("2025.2")
+    def bp_higher_stop_band(self, value: float | str) -> None:
+        value = self._convert_to_internal_units(value, "Freq")
+        self._set_property("BandPassHigherStopBandFrequency", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def bs_lower_cutoff(self) -> float:
+        """Band stop filter lower cutoff frequency.
+
+        Value should be between 1 and 100e9.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> filt = app.schematic.create_component("Band Pass")
+        >>> filt.filter_type = Filter.FilterTypeOption.BAND_STOP
+        >>> filt.bs_lower_cutoff = 80e6
+
+        """
+        if int(self._emit_obj.aedt_env_variable[-3:]) < 261:
+            val = self._get_property("Lower Cutoff")
+        else:
+            val = self._get_property("BS Lower Cutoff")
+        val = self._convert_from_internal_units(float(val), "Freq")
+        return float(val)
+
+    @bs_lower_cutoff.setter
+    @min_aedt_version("2025.2")
+    def bs_lower_cutoff(self, value: float | str) -> None:
+        value = self._convert_to_internal_units(value, "Freq")
+        self._set_property("BandStopLowerCutoffFrequency", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def bs_lower_stop_band(self) -> float:
+        """Band stop filter lower stop band frequency.
+
+        Value should be between 1 and 100e9.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> filt = app.schematic.create_component("Band Pass")
+        >>> filt.filter_type = Filter.FilterTypeOption.BAND_STOP
+        >>> filt.bs_lower_stop_band = 90e6
+
+        """
+        if int(self._emit_obj.aedt_env_variable[-3:]) < 261:
+            val = self._get_property("Lower Stop Band")
+        else:
+            val = self._get_property("BS Lower Stop Band")
+        val = self._convert_from_internal_units(float(val), "Freq")
+        return float(val)
+
+    @bs_lower_stop_band.setter
+    @min_aedt_version("2025.2")
+    def bs_lower_stop_band(self, value: float | str) -> None:
+        value = self._convert_to_internal_units(value, "Freq")
+        self._set_property("BandStopLowerStopBandFrequency", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def bs_higher_stop_band(self) -> float:
+        """Band stop filter higher stop band frequency.
+
+        Value should be between 1 and 100e9.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> filt = app.schematic.create_component("Band Pass")
+        >>> filt.filter_type = Filter.FilterTypeOption.BAND_STOP
+        >>> filt.bs_higher_stop_band = 110e6
+
+        """
+        if int(self._emit_obj.aedt_env_variable[-3:]) < 261:
+            val = self._get_property("Higher Stop Band")
+        else:
+            val = self._get_property("BS Higher Stop Band")
+        val = self._convert_from_internal_units(float(val), "Freq")
+        return float(val)
+
+    @bs_higher_stop_band.setter
+    @min_aedt_version("2025.2")
+    def bs_higher_stop_band(self, value: float | str) -> None:
+        value = self._convert_to_internal_units(value, "Freq")
+        self._set_property("BandStopHigherStopBandFrequency", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def bs_higher_cutoff(self) -> float:
+        """Band stop filter higher cutoff frequency.
+
+        Value should be between 1 and 100e9.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> filt = app.schematic.create_component("Band Pass")
+        >>> filt.filter_type = Filter.FilterTypeOption.BAND_STOP
+        >>> filt.bs_higher_cutoff = 120e6
+
+        """
+        if int(self._emit_obj.aedt_env_variable[-3:]) < 261:
+            val = self._get_property("Higher Cutoff")
+        else:
+            val = self._get_property("BS Higher Cutoff")
+        val = self._convert_from_internal_units(float(val), "Freq")
+        return float(val)
+
+    @bs_higher_cutoff.setter
+    @min_aedt_version("2025.2")
+    def bs_higher_cutoff(self, value: float | str) -> None:
+        value = self._convert_to_internal_units(value, "Freq")
+        self._set_property("BandStopHigherCutoffFrequency", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def lowest_tuned_frequency(self) -> float:
+        """Lowest tuned frequency.
+
+        Value should be between 1 and 100e9.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> filt = app.schematic.create_component("Band Pass")
+        >>> filt.filter_type = Filter.FilterTypeOption.TUNABLE_BANDPASS
+        >>> filt.lowest_tuned_frequency = 80e6
+
+        """
+        val = self._get_property("Lowest Tuned Frequency")
+        val = self._convert_from_internal_units(float(val), "Freq")
+        return float(val)
+
+    @lowest_tuned_frequency.setter
+    @min_aedt_version("2025.2")
+    def lowest_tuned_frequency(self, value: float | str) -> None:
+        value = self._convert_to_internal_units(value, "Freq")
+        self._set_property("Lowest Tuned Frequency", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def highest_tuned_frequency(self) -> float:
+        """Highest tuned frequency.
+
+        Value should be between 1 and 100e9.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> filt = app.schematic.create_component("Band Pass")
+        >>> filt.filter_type = Filter.FilterTypeOption.TUNABLE_BANDPASS
+        >>> filt.highest_tuned_frequency = 120e6
+
+        """
+        val = self._get_property("Highest Tuned Frequency")
+        val = self._convert_from_internal_units(float(val), "Freq")
+        return float(val)
+
+    @highest_tuned_frequency.setter
+    @min_aedt_version("2025.2")
+    def highest_tuned_frequency(self, value: float | str) -> None:
+        value = self._convert_to_internal_units(value, "Freq")
+        self._set_property("Highest Tuned Frequency", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def percent_bandwidth(self) -> float:
+        """Tunable filter 3-dB bandwidth.
+
+        Value should be between 0.001 and 100.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> filt = app.schematic.create_component("Band Pass")
+        >>> filt.filter_type = Filter.FilterTypeOption.TUNABLE_BANDPASS
+        >>> filt.percent_bandwidth = 10
+
+        """
+        val = self._get_property("Percent Bandwidth")
+        return float(val)
+
+    @percent_bandwidth.setter
+    @min_aedt_version("2025.2")
+    def percent_bandwidth(self, value: float) -> None:
+        self._set_property("Percent Bandwidth", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def shape_factor(self) -> float:
+        """Ratio defining the filter rolloff.
+
+        Value should be between 1 and 100.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> filt = app.schematic.create_component("Band Pass")
+        >>> filt.filter_type = Filter.FilterTypeOption.TUNABLE_BANDPASS
+        >>> filt.shape_factor = 2
+
+        """
+        val = self._get_property("Shape Factor")
+        return float(val)
+
+    @shape_factor.setter
+    @min_aedt_version("2025.2")
+    def shape_factor(self, value: float) -> None:
+        self._set_property("Shape Factor", f"{value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def warnings(self) -> str:
+        """Warning(s) for this node.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> filt = app.schematic.create_component("Band Pass")
+        >>> filt.warnings
+
+        """
+        val = self._get_property("Warnings")
+        return val

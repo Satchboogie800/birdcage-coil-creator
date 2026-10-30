@@ -1,0 +1,2122 @@
+# -*- coding: utf-8 -*-
+#
+# Copyright (C) 2021 - 2026 Synopsys, Inc. and ANSYS, Inc. All rights reserved.
+# SPDX-License-Identifier: MIT
+#
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+"""The module contains these classes: `Layer` and `Layers`.
+
+The module provides all layer stackup functionalities for the Circuit and HFSS 3D Layout tools.
+"""
+
+from copy import deepcopy
+
+from ansys.aedt.core.base import PyAedtBase
+from ansys.aedt.core.generic.constants import unit_converter
+from ansys.aedt.core.generic.data_handlers import str_to_bool
+from ansys.aedt.core.generic.general_methods import pyaedt_function_handler
+from ansys.aedt.core.generic.numbers_utils import Quantity
+from ansys.aedt.core.generic.numbers_utils import decompose_variable_value
+
+
+@pyaedt_function_handler()
+def _getIfromRGB(rgb):
+    """Retrieve if from a specific layer color.
+
+    Parameters
+    ----------
+    rgb : list
+        List representing the color. IT is made of 3 values: blue, green, and red.
+
+    Returns
+    -------
+    int
+
+    """
+    red = rgb[2]
+    green = rgb[1]
+    blue = rgb[0]
+    rgb_int = (red << 16) + (green << 8) + blue
+    return rgb_int
+
+
+@pyaedt_function_handler()
+def _getRGBfromI(value):
+    """Retrieve the Integer from a specific layer color.
+
+    Parameters
+    ----------
+    value : int
+        Integer value representing the layer color.
+
+    Returns
+    -------
+    list
+
+    """
+    r = (value >> 16) & 0xFF
+    g = (value >> 8) & 0xFF
+    b = (value >> 0) & 0xFF
+    return [r, g, b]
+
+
+class Layer(PyAedtBase):
+    """Manages the stackup layer for the Circuit and HFSS 3D Layout tools.
+
+    Parameters
+    ----------
+    app : :class:`ansys.aedt.core.modules.layer_stackup.Layers`
+    layertype : string, optional
+        The default is ``"signal"``.
+    negative : bool, optional
+        Whether the geometry on the layer is cut away
+        from the layer. The default is ``False``.
+
+    Examples
+    --------
+    >>> from ansys.aedt.core import Hfss3dLayout
+    >>> app = Hfss3dLayout()
+    >>> layers = app.modeler.layers["Top"]
+
+    """
+
+    def __init__(self, app, layertype: str = "signal", negative: bool = False) -> None:
+        self.LengthUnit = app.LengthUnit
+        self.LengthUnitRough = app.LengthUnit
+        self._layers = app
+        self.name = None
+        self.type = layertype
+        self.id = 0
+        self._color = [255, 0, 0]
+        self._transparency = 60
+        self._is_visible = True
+        self._is_visible_shape = True
+        self._is_visible_path = True
+        self._is_visible_pad = True
+        self._is_visible_hole = True
+        self._is_visible_component = True
+        self._is_mesh_background = True
+        self._is_mesh_overlay = True
+        self._locked = False
+        self._topbottom = "neither"
+        self._pattern = 1
+        self._drawoverride = 0
+        self._thickness = 0
+        self._lower_elevation = 0
+        self._roughness = 0
+        self._botroughness = 0
+        self._toprounghenss = 0
+        self._sideroughness = 0
+        self._material = "copper"
+        self._fillmaterial = "FR4_epoxy"
+        self._index = 1
+        self._is_negative = negative
+        self._thickness_units = ""
+        # Etch option
+        self._useetch = False
+        self._etch = 0
+        # Rough option
+        self._user = False
+        self._RMdl = "Huray"
+        self._NR = 0.0005
+        self._HRatio = 2.9
+        self._BRMdl = "Huray"
+        self._BNR = 0.0005
+        self._BHRatio = 2.9
+        self._SRMdl = "Huray"
+        self._SNR = 0.0005
+        self._SHRatio = 2.9
+        # Solver option
+        self._usp = False
+        self.hfssSp = {"si": True, "dt": 0, "dtv": 0.1}
+        self.planaremSp = {"ifg": False, "vly": False}
+        self._zones = None
+
+    @property
+    def color(self) -> list:
+        """Return or set the property of the active layer. Color it is list of rgb values (0,255).
+
+        Returns
+        -------
+        list
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layer
+        >>> obj = Layer()
+        >>> obj.color
+
+        """
+        if isinstance(self._color, list):
+            return self._color
+        else:
+            self._color = _getRGBfromI(self._color)
+            return self._color
+
+    @color.setter
+    def color(self, val: list) -> None:
+        if isinstance(val, list):
+            self._color = val
+        else:
+            self._color = _getRGBfromI(val)
+        self.update_stackup_layer()
+
+    @property
+    def transparency(self) -> int:
+        """Get/Set the property to the active layer.
+
+        Returns
+        -------
+        int
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layer
+        >>> obj = Layer()
+        >>> obj.transparency
+
+        """
+        return self._transparency
+
+    @transparency.setter
+    def transparency(self, val: int) -> None:
+        self._transparency = val
+        self.update_stackup_layer()
+
+    @property
+    def is_visible(self) -> bool:
+        """Get/Set the active layer visibility.
+
+        Returns
+        -------
+        bool
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layer
+        >>> obj = Layer()
+        >>> obj.is_visible
+
+        """
+        return self._is_visible
+
+    @is_visible.setter
+    def is_visible(self, val: bool) -> None:
+        self._is_visible = val
+        self.update_stackup_layer()
+
+    @property
+    def is_visible_shape(self) -> bool:
+        """Get/Set the active layer shape visibility.
+
+        Returns
+        -------
+        bool
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layer
+        >>> obj = Layer()
+        >>> obj.is_visible_shape
+
+        """
+        return self._is_visible_shape
+
+    @is_visible_shape.setter
+    def is_visible_shape(self, val: bool) -> None:
+        self._is_visible_shape = val
+        self.update_stackup_layer()
+
+    @property
+    def is_visible_path(self) -> bool:
+        """Get/Set the active layer paths visibility.
+
+        Returns
+        -------
+        bool
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layer
+        >>> obj = Layer()
+        >>> obj.is_visible_path
+
+        """
+        return self._is_visible_path
+
+    @is_visible_path.setter
+    def is_visible_path(self, val: bool) -> None:
+        self._is_visible_path = val
+        self.update_stackup_layer()
+
+    @property
+    def is_visible_pad(self) -> bool:
+        """Get/Set the active layer pad visibility.
+
+        Returns
+        -------
+        bool
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layer
+        >>> obj = Layer()
+        >>> obj.is_visible_pad
+
+        """
+        return self._is_visible_pad
+
+    @is_visible_pad.setter
+    def is_visible_pad(self, val: bool) -> None:
+        self._is_visible_pad = val
+        self.update_stackup_layer()
+
+    @property
+    def is_visible_hole(self) -> bool:
+        """Get/Set the active layer hole visibility.
+
+        Returns
+        -------
+        bool
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layer
+        >>> obj = Layer()
+        >>> obj.is_visible_hole
+
+        """
+        return self._is_visible_hole
+
+    @is_visible_hole.setter
+    def is_visible_hole(self, val: bool) -> None:
+        self._is_visible_hole = val
+        self.update_stackup_layer()
+
+    @property
+    def is_visible_component(self) -> bool:
+        """Get/Set the active layer component visibility.
+
+        Returns
+        -------
+        bool
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layer
+        >>> obj = Layer()
+        >>> obj.is_visible_component
+
+        """
+        return self._is_visible_component
+
+    @is_visible_component.setter
+    def is_visible_component(self, val: bool) -> None:
+        self._is_visible_component = val
+        self.update_stackup_layer()
+
+    @property
+    def is_mesh_background(self) -> bool:
+        """Get/Set the active layer mesh backgraound.
+
+        Returns
+        -------
+        bool
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layer
+        >>> obj = Layer()
+        >>> obj.is_mesh_background
+
+        """
+        return self._is_mesh_background
+
+    @is_mesh_background.setter
+    def is_mesh_background(self, val: bool) -> None:
+        self._is_mesh_background = val
+        self.update_stackup_layer()
+
+    @property
+    def is_mesh_overlay(self) -> bool:
+        """Get/Set the active layer mesh overlay.
+
+        Returns
+        -------
+        bool
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layer
+        >>> obj = Layer()
+        >>> obj.is_mesh_overlay
+
+        """
+        return self._is_mesh_overlay
+
+    @is_mesh_overlay.setter
+    def is_mesh_overlay(self, val: bool) -> None:
+        self._is_mesh_overlay = val
+        self.update_stackup_layer()
+
+    @property
+    def locked(self) -> bool:
+        """Get/Set the active layer lock flag.
+
+        Returns
+        -------
+        bool
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layer
+        >>> obj = Layer()
+        >>> obj.locked
+
+        """
+        return self._locked
+
+    @locked.setter
+    def locked(self, val: bool) -> None:
+        self._locked = val
+        self.update_stackup_layer()
+
+    @property
+    def top_bottom(self) -> str:
+        """Get/Set the active layer top bottom alignment.
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layer
+        >>> obj = Layer()
+        >>> obj.top_bottom
+
+        """
+        return self._topbottom
+
+    @top_bottom.setter
+    def top_bottom(self, val: str) -> None:
+        self._topbottom = val
+        self.update_stackup_layer()
+
+    @property
+    def pattern(self) -> float:
+        """Get/Set the active layer pattern.
+
+        Returns
+        -------
+        float
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layer
+        >>> obj = Layer()
+        >>> obj.pattern
+
+        """
+        return self._pattern
+
+    @pattern.setter
+    def pattern(self, val: float) -> None:
+        self._pattern = val
+        self.update_stackup_layer()
+
+    @property
+    def draw_override(self) -> float:
+        """Get/Set the active layer draw override value.
+
+        Returns
+        -------
+        float
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layer
+        >>> obj = Layer()
+        >>> obj.draw_override
+
+        """
+        return self._drawoverride
+
+    @draw_override.setter
+    def draw_override(self, val: float) -> None:
+        self._drawoverride = val
+        self.update_stackup_layer()
+
+    @property
+    def thickness(self) -> float:
+        """Get/Set the active layer thickness value.
+
+        Returns
+        -------
+        float
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layer
+        >>> obj = Layer()
+        >>> obj.thickness
+
+        """
+        return self._thickness
+
+    @thickness.setter
+    def thickness(self, val: float) -> None:
+        self._thickness = str(Quantity(val, self.thickness_units))
+        self.update_stackup_layer()
+        tck = decompose_variable_value(self._thickness)
+        self._thickness = tck[0]
+        self._thickness_units = tck[1]
+
+    @property
+    def upper_elevation(self) -> float:
+        """Get the active layer upper elevation value with units.
+
+        Returns
+        -------
+        float
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layer
+        >>> obj = Layer()
+        >>> obj.upper_elevation
+
+        """
+        return (
+            unit_converter(self.thickness, input_units=self.thickness_units, output_units=self.LengthUnit)
+            + self.lower_elevation
+        )
+
+    @property
+    def thickness_units(self) -> str:
+        """Get the active layer thickness units value.
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layer
+        >>> obj = Layer()
+        >>> obj.thickness_units
+
+        """
+        return self._thickness_units
+
+    @property
+    def lower_elevation(self) -> float:
+        """Get/Set the active layer lower elevation.
+
+        Returns
+        -------
+        float
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layer
+        >>> obj = Layer()
+        >>> obj.lower_elevation
+
+        """
+        return self._lower_elevation
+
+    @lower_elevation.setter
+    def lower_elevation(self, val: float) -> None:
+        self._lower_elevation = val
+        self.update_stackup_layer()
+
+    @property
+    def roughness(self) -> str:
+        """Return or set the active layer roughness (with units).
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layer
+        >>> obj = Layer()
+        >>> obj.roughness
+
+        """
+        return self._roughness
+
+    @roughness.setter
+    def roughness(self, value: str) -> None:
+        self._roughness = value
+        self.update_stackup_layer()
+
+    @property
+    def bottom_roughness(self) -> str:
+        """Return or set the active layer bottom roughness (with units).
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layer
+        >>> obj = Layer()
+        >>> obj.bottom_roughness
+
+        """
+        return self._botroughness
+
+    @bottom_roughness.setter
+    def bottom_roughness(self, value: str) -> None:
+        self._botroughness = value
+        self.update_stackup_layer()
+
+    @property
+    def top_roughness(self) -> str:
+        """Get/Set the active layer top roughness (with units).
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layer
+        >>> obj = Layer()
+        >>> obj.top_roughness
+
+        """
+        return self._toprounghenss
+
+    @top_roughness.setter
+    def top_roughness(self, val: str) -> None:
+        self._toprounghenss = val
+        self.update_stackup_layer()
+
+    @property
+    def side_roughness(self) -> str:
+        """Get/Set the active layer side roughness (with units).
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layer
+        >>> obj = Layer()
+        >>> obj.side_roughness
+
+        """
+        return self._sideroughness
+
+    @side_roughness.setter
+    def side_roughness(self, val: str) -> None:
+        self._sideroughness = val
+        self.update_stackup_layer()
+
+    @property
+    def material(self) -> str:
+        """Get/Set the active layer material name.
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layer
+        >>> obj = Layer()
+        >>> obj.material
+
+        """
+        return self._material
+
+    @material.setter
+    def material(self, val: str) -> None:
+        self._material = val
+        self.update_stackup_layer()
+
+    @property
+    def fill_material(self) -> str:
+        """Get/Set the active layer filling material.
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layer
+        >>> obj = Layer()
+        >>> obj.fill_material
+
+        """
+        return self._fillmaterial
+
+    @fill_material.setter
+    def fill_material(self, val: str) -> None:
+        self._fillmaterial = val
+        self.update_stackup_layer()
+
+    @property
+    def index(self) -> int:
+        """Get/Set the active layer index.
+
+        Returns
+        -------
+        int
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layer
+        >>> obj = Layer()
+        >>> obj.index
+
+        """
+        return self._index
+
+    @index.setter
+    def index(self, val: int) -> None:
+        self._index = val
+        self.update_stackup_layer()
+
+    @property
+    def is_negative(self) -> bool:
+        """Get/Set the active layer negative flag. When `True` the layer will be negative.
+
+        Returns
+        -------
+        bool
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layer
+        >>> obj = Layer()
+        >>> obj.is_negative
+
+        """
+        return self._is_negative
+
+    @is_negative.setter
+    def is_negative(self, val: bool) -> None:
+        self._is_negative = val
+        self.update_stackup_layer()
+
+    @property
+    def use_etch(self) -> bool:
+        """Get/Set the active layer etiching flag. When `True` the layer will use etch.
+
+        Returns
+        -------
+        bool
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layer
+        >>> obj = Layer()
+        >>> obj.use_etch
+
+        """
+        return self._useetch
+
+    @use_etch.setter
+    def use_etch(self, val: bool) -> None:
+        self._useetch = val
+        self.update_stackup_layer()
+
+    @property
+    def etch(self) -> float:
+        """Get/Set the active layer etch value.
+
+        Returns
+        -------
+        float
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layer
+        >>> obj = Layer()
+        >>> obj.etch
+
+        """
+        return self._etch
+
+    @etch.setter
+    def etch(self, val: float) -> None:
+        self._etch = val
+        self.update_stackup_layer()
+
+    @property
+    def user(self) -> bool:
+        """Get/Set the active layer user flag.
+
+        Returns
+        -------
+        bool
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layer
+        >>> obj = Layer()
+        >>> obj.user
+
+        """
+        return self._user
+
+    @user.setter
+    def user(self, val: bool) -> None:
+        self._user = val
+        self.update_stackup_layer()
+
+    @property
+    def top_roughness_model(self) -> str:
+        """Get/Set the active layer top roughness model.
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layer
+        >>> obj = Layer()
+        >>> obj.top_roughness_model
+
+        """
+        return self._RMdl
+
+    @top_roughness_model.setter
+    def top_roughness_model(self, val: str) -> None:
+        self._RMdl = val
+        self.update_stackup_layer()
+
+    @property
+    def top_nodule_radius(self) -> float:
+        """Get/Set the active layer top roughness radius.
+
+        Returns
+        -------
+        float
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layer
+        >>> obj = Layer()
+        >>> obj.top_nodule_radius
+
+        """
+        return self._NR
+
+    @top_nodule_radius.setter
+    def top_nodule_radius(self, val: float) -> None:
+        self._NR = val
+        self.update_stackup_layer()
+
+    @property
+    def top_huray_ratio(self) -> float:
+        """Get/Set the active layer top roughness ratio.
+
+        Returns
+        -------
+        float
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layer
+        >>> obj = Layer()
+        >>> obj.top_huray_ratio
+
+        """
+        return self._HRatio
+
+    @top_huray_ratio.setter
+    def top_huray_ratio(self, val: float) -> None:
+        self._HRatio = val
+        self.update_stackup_layer()
+
+    @property
+    def bottom_roughness_model(self) -> str:
+        """Get/Set the active layer bottom roughness model.
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layer
+        >>> obj = Layer()
+        >>> obj.bottom_roughness_model
+
+        """
+        return self._BRMdl
+
+    @bottom_roughness_model.setter
+    def bottom_roughness_model(self, val: str) -> None:
+        self._BRMdl = val
+        self.update_stackup_layer()
+
+    @property
+    def bottom_nodule_radius(self) -> float:
+        """Get/Set the active layer bottom roughness radius.
+
+        Returns
+        -------
+        float
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layer
+        >>> obj = Layer()
+        >>> obj.bottom_nodule_radius
+
+        """
+        return self._BNR
+
+    @bottom_nodule_radius.setter
+    def bottom_nodule_radius(self, val: float) -> None:
+        self._BNR = val
+        self.update_stackup_layer()
+
+    @property
+    def bottom_huray_ratio(self) -> float:
+        """Get/Set the active layer bottom roughness ratio.
+
+        Returns
+        -------
+        float
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layer
+        >>> obj = Layer()
+        >>> obj.bottom_huray_ratio
+
+        """
+        return self._BHRatio
+
+    @bottom_huray_ratio.setter
+    def bottom_huray_ratio(self, val: float) -> None:
+        self._BHRatio = val
+        self.update_stackup_layer()
+
+    @property
+    def side_model(self) -> str:
+        """Get/Set the active layer side roughness model.
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layer
+        >>> obj = Layer()
+        >>> obj.side_model
+
+        """
+        return self._SRMdl
+
+    @side_model.setter
+    def side_model(self, val: str) -> None:
+        self._SRMdl = val
+        self.update_stackup_layer()
+
+    @property
+    def side_nodule_radius(self) -> float:
+        """Get/Set the active layer side roughness radius.
+
+        Returns
+        -------
+        float
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layer
+        >>> obj = Layer()
+        >>> obj.side_nodule_radius
+
+        """
+        return self._SNR
+
+    @side_nodule_radius.setter
+    def side_nodule_radius(self, val: float) -> None:
+        self._SNR = val
+        self.update_stackup_layer()
+
+    @property
+    def side_huray_ratio(self) -> float:
+        """Get/Set the active layer bottom roughness ratio.
+
+        Returns
+        -------
+        float
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layer
+        >>> obj = Layer()
+        >>> obj.side_huray_ratio
+
+        """
+        return self._SHRatio
+
+    @side_huray_ratio.setter
+    def side_huray_ratio(self, val: float) -> None:
+        self._SHRatio = val
+        self.update_stackup_layer()
+
+    @property
+    def usp(self) -> bool:
+        """Get/Set the active layer usp flag.
+
+        Returns
+        -------
+        bool
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layer
+        >>> obj = Layer()
+        >>> obj.usp
+
+        """
+        return self._usp
+
+    @usp.setter
+    def usp(self, val: bool) -> None:
+        self._usp = val
+        self.update_stackup_layer()
+
+    @property
+    def hfss_solver_settings(self) -> dict:
+        """Get/Set the active layer hfss solver settings.
+
+        Returns
+        -------
+        dict
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layer
+        >>> obj = Layer()
+        >>> obj.hfss_solver_settings
+
+        """
+        return self.hfssSp
+
+    @hfss_solver_settings.setter
+    def hfss_solver_settings(self, val: dict) -> None:
+        self.hfssSp = val
+        self.update_stackup_layer()
+
+    @property
+    def planar_em_solver_settings(self) -> dict:
+        """Get/Set the active layer PlanarEm solver settings.
+
+        Returns
+        -------
+        dict
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layer
+        >>> obj = Layer()
+        >>> obj.planar_em_solver_settings
+
+        """
+        return self.planaremSp
+
+    @planar_em_solver_settings.setter
+    def planar_em_solver_settings(self, val: dict) -> None:
+        self.planaremSp = val
+        self.update_stackup_layer()
+
+    @property
+    def zones(self) -> list:
+        """Get/Set the active layer zoness.
+
+        Returns
+        -------
+        list
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layer
+        >>> obj = Layer()
+        >>> obj.zones
+
+        """
+        if self._zones is None:
+            self._zones = [i for i in self._layers.all_layers if self.name in i and ";" in i]
+        return self._zones
+
+    @zones.setter
+    def zones(self, val: list) -> None:
+        self._zones = val
+        self.update_stackup_layer()
+
+    @property
+    def oeditor(self):
+        """Oeditor Module.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layer
+        >>> obj = Layer()
+        >>> obj.oeditor
+
+        """
+        return self._layers.oeditor
+
+    @property
+    def visflag(self) -> int:
+        """Visibility flag for objects on the layer.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layer
+        >>> obj = Layer()
+        >>> obj.visflag
+
+        """
+        visflag = 0
+        if not self._is_visible:
+            visflag = 0
+        else:
+            if self._is_mesh_background:
+                visflag += 64
+            if self._is_mesh_overlay:
+                visflag += 32
+            if self._is_visible_shape:
+                visflag += 1
+            if self._is_visible_path:
+                visflag += 2
+            if self.is_visible_pad:
+                visflag += 4
+            if self._is_visible_hole:
+                visflag += 8
+            if self._is_visible_component:
+                visflag += 16
+        return visflag
+
+    @pyaedt_function_handler()
+    def set_layer_color(self, r: int, g: int, b: int) -> bool:
+        """Update the color of the layer.
+
+        Parameters
+        ----------
+        r : int
+            Red color value.
+        g : int
+            Green color value.
+        b :  int
+            Blue color value.
+
+        Returns
+        -------
+        bool
+            ``True`` when successful, ``False`` when failed.
+
+        References
+        ----------
+        >>> oEditor.ChangeLayer
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layer
+        >>> obj = Layer()
+        >>> obj.set_layer_color(r=1, g=1, b=[0, 1, 0])
+
+        """
+        rgb = [r, g, b]
+        self.color = _getIfromRGB(rgb)
+        return True
+
+    @pyaedt_function_handler()
+    def create_stackup_layer(self) -> bool:
+        """Create a stackup layer.
+
+        Returns
+        -------
+        bool
+            ``True`` when successful, ``False`` when failed.
+
+        References
+        ----------
+        >>> oEditor.AddStackupLayer
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layer
+        >>> obj = Layer()
+        >>> obj.create_stackup_layer()
+
+        """
+        self.remove_stackup_layer()
+        self.oeditor.AddStackupLayer(self._get_layer_arg)
+        infos = self.oeditor.GetLayerInfo(self.name)
+        infos = [i.split(": ") for i in infos]
+        infosdict = {i[0]: i[1] for i in infos}
+        self.id = int(infosdict["LayerId"])
+
+        return True
+
+    @property
+    def _get_layer_arg(self):
+        if self.type in ["signal", "via", "dielectric"]:
+            args = [
+                "NAME:stackup layer",
+                "Name:=",
+                self.name,
+            ]
+        else:
+            args = [
+                "NAME:layer",
+                "Name:=",
+                self.name,
+            ]
+        if self.id > 0:
+            args.extend(
+                ["ID:=", self.id],
+            )
+        if self.type == "signal":
+            args.extend(
+                [
+                    "Type:=",
+                    self.type,
+                    "Top Bottom:=",
+                    self.top_bottom,
+                    "Color:=",
+                    _getIfromRGB(self.color),
+                    "Transparency:=",
+                    self.transparency,
+                    "Pattern:=",
+                    self.pattern,
+                    "VisFlag:=",
+                    self.visflag,
+                    "Locked:=",
+                    self.locked,
+                    "DrawOverride:=",
+                    self.draw_override,
+                    "Zones:=",
+                    self.zones,
+                    [
+                        "NAME:Sublayer",
+                        "Thickness:=",
+                        str(Quantity(self.thickness, self.thickness_units)),
+                        "LowerElevation:=",
+                        str(Quantity(self.lower_elevation, self.LengthUnit)),
+                        "Roughness:=",
+                        str(Quantity(self.roughness, self.LengthUnitRough)),
+                        "BotRoughness:=",
+                        str(Quantity(self.bottom_roughness, self.LengthUnitRough)),
+                        "SideRoughness:=",
+                        str(Quantity(self.top_roughness, self.LengthUnitRough)),
+                        "Material:=",
+                        self._layers._app.materials[self.material].name if self.material != "" else "",
+                        "FillMaterial:=",
+                        self._layers._app.materials[self.fill_material].name if self.fill_material != "" else "",
+                    ],
+                    "Neg:=",
+                    self._is_negative,
+                    "Usp:=",
+                    self.usp,
+                    [
+                        "NAME:Sp",
+                        "Sn:=",
+                        "HFSS",
+                        "Sv:=",
+                        "so(si="
+                        + str(self.hfssSp["si"]).lower()
+                        + " , dt="
+                        + str(self.hfssSp["dt"])
+                        + ", dtv='"
+                        + str(Quantity(self.hfssSp["dtv"], self.LengthUnit))
+                        + "')",
+                    ],
+                    [
+                        "NAME:Sp",
+                        "Sn:=",
+                        "PlanarEM",
+                        "Sv:=",
+                        "so(ifg="
+                        + str(self.planaremSp["ifg"]).lower()
+                        + ", vly="
+                        + str(self.planaremSp["vly"]).lower()
+                        + ")",
+                    ],
+                    "Etch:=",
+                    str(self.etch),
+                    "UseEtch:=",
+                    self.use_etch,
+                    "UseR:=",
+                    self.user,
+                    "RMdl:=",
+                    self._RMdl,
+                    "NR:=",
+                    str(Quantity(self._NR, self.LengthUnitRough)),
+                    "HRatio:=",
+                    str(self._HRatio),
+                    "BRMdl:=",
+                    self._BRMdl,
+                    "BNR:=",
+                    str(Quantity(self._BNR, self.LengthUnitRough)),
+                    "BHRatio:=",
+                    str(self._BHRatio),
+                    "SRMdl:=",
+                    self._SRMdl,
+                    "SNR:=",
+                    str(Quantity(self._SNR, self.LengthUnitRough)),
+                    "SHRatio:=",
+                    str(self._SHRatio),
+                ]
+            )
+        elif self.type == "dielectric":
+            args.extend(
+                [
+                    "Type:=",
+                    self.type,
+                    "Top Bottom:=",
+                    self.top_bottom,
+                    "Color:=",
+                    self.color,
+                    "Transparency:=",
+                    self.transparency,
+                    "Pattern:=",
+                    self.pattern,
+                    "VisFlag:=",
+                    self.visflag,
+                    "Locked:=",
+                    self.locked,
+                    "DrawOverride:=",
+                    self.draw_override,
+                    "Zones:=",
+                    self.zones,
+                    [
+                        "NAME:Sublayer",
+                        "Thickness:=",
+                        str(Quantity(self.thickness, self.thickness_units)),
+                        "LowerElevation:=",
+                        str(Quantity(self.lower_elevation, self.LengthUnit)),
+                        "Roughness:=",
+                        0,
+                        "BotRoughness:=",
+                        0,
+                        "SideRoughness:=",
+                        0,
+                        "Material:=",
+                        self.material,
+                    ],
+                ]
+            )
+        else:
+            args.extend(
+                [
+                    "Type:=",
+                    self.type,
+                    "Top Bottom:=",
+                    self.top_bottom,
+                    "Color:=",
+                    self.color,
+                    "Transparency:=",
+                    self.transparency,
+                    "Pattern:=",
+                    self.pattern,
+                    "VisFlag:=",
+                    self.visflag,
+                    "Locked:=",
+                    self.locked,
+                ]
+            )
+        return args
+
+    @pyaedt_function_handler()
+    def update_stackup_layer(self) -> bool:
+        """Update the stackup layer.
+
+        .. note::
+           This method is valid for release 2021 R1 and later.
+           This method works only for signal and dielectric layers.
+
+        Returns
+        -------
+        bool
+            ``True`` when successful, ``False`` when failed.
+
+        References
+        ----------
+        >>> oEditor.ChangeLayer
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layer
+        >>> obj = Layer()
+        >>> obj.update_stackup_layer()
+
+        """
+        self.oeditor.ChangeLayer(self._get_layer_arg)
+        return True
+
+    @pyaedt_function_handler()
+    def remove_stackup_layer(self) -> bool:
+        """Remove the stackup layer.
+
+        Returns
+        -------
+        bool
+            ``True`` when successful, ``False`` when failed.
+
+        References
+        ----------
+        >>> oEditor.RemoveLayer
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layer
+        >>> obj = Layer()
+        >>> obj.remove_stackup_layer()
+
+        """
+        if self.name in self.oeditor.GetStackupLayerNames():
+            self.oeditor.RemoveLayer(self.name)
+            return True
+        return False
+
+
+class Layers(PyAedtBase):
+    """Manages stackup for the Circuit and HFSS 3D Layout tools.
+
+    Parameters
+    ----------
+    modeler : :class:`ansys.aedt.core.modeler.modeler_pcb.Modeler3DLayout`
+
+    roughnessunits : str, optional
+       Units for the roughness of layers. The default is ``"um"``.
+
+    Examples
+    --------
+    >>> from ansys.aedt.core import Hfss3dLayout
+    >>> app = Hfss3dLayout()
+    >>> layers = app.modeler.layers
+
+    """
+
+    def __init__(self, modeler, roughnessunits: str = "um") -> None:
+        """Layer stackup."""
+        self._modeler = modeler
+        self._app = self._modeler._app
+        self._currentId = 0
+        self.lengthUnitRough = roughnessunits
+        self.logger = self._app.logger
+
+    @property
+    def oeditor(self):
+        """Editor.
+
+        References
+        ----------
+        >>> oEditor = oDesign.SetActiveEditor("Layout")
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layers
+        >>> obj = Layers()
+        >>> obj.oeditor
+
+        """
+        return self._modeler.oeditor
+
+    @property
+    def zones(self) -> list:
+        """List of all available zones.
+
+        Returns
+        -------
+        list
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layers
+        >>> obj = Layers()
+        >>> obj.zones
+
+        """
+        all_layers = list(self._modeler.oeditor.GetStackupLayerNames())
+        zones = []
+        for lay in all_layers:
+            if ";" in lay:
+                zones.append(lay.split(";")[0])
+        return list(set(zones))
+
+    @property
+    def LengthUnit(self) -> str:
+        """Length units.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layers
+        >>> obj = Layers()
+        >>> obj.LengthUnit
+
+        """
+        return self._modeler.model_units
+
+    @property
+    def all_layers(self) -> list:
+        """All stackup layers.
+
+        Returns
+        -------
+        list
+           List of stackup layers.
+
+        References
+        ----------
+        >>> oEditor.GetStackupLayerNames()
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layers
+        >>> obj = Layers()
+        >>> obj.all_layers
+
+        """
+        return [i for i in self.oeditor.GetAllLayerNames() if ";" not in i]
+
+    @property
+    def drawing_layers(self) -> list:
+        """All drawing layers.
+
+        Returns
+        -------
+        list
+           List of drawing layers.
+
+        References
+        ----------
+        >>> oEditor.GetAllLayerNames()
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layers
+        >>> obj = Layers()
+        >>> obj.drawing_layers
+
+        """
+        return [v for k, v in self.layers.items() if v.type not in ["signal", "via", "dielectric"]]
+
+    @property
+    def stackup_layers(self) -> list:
+        """All stackup layers.
+
+        Returns
+        -------
+        List of :class:`ansys.aedt.core.modules.layer_stackup.Layer`
+           List of stackup layers.
+
+        References
+        ----------
+        >>> oEditor.GetAllLayerNames()
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layers
+        >>> obj = Layers()
+        >>> obj.stackup_layers
+
+        """
+        return [v for k, v in self.layers.items() if v.type in ["signal", "via", "dielectric"]]
+
+    @property
+    def all_signal_layers(self) -> list[Layer]:
+        """All signal layers.
+
+        Returns
+        -------
+        List of :class:`ansys.aedt.core.modules.layer_stackup.Layer`
+            List of signal layers.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layers
+        >>> obj = Layers()
+        >>> obj.all_signal_layers
+
+        """
+        return [v for k, v in self.layers.items() if v.type == "signal"]
+
+    @property
+    def signals(self) -> dict[str, Layer]:
+        """All signal layers.
+
+        Returns
+        -------
+        dict[str, :class:`ansys.aedt.core.modules.layer_stackup.Layer`]
+           Conductor layers.
+
+        References
+        ----------
+        >>> oEditor.GetAllLayerNames()
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layers
+        >>> obj = Layers()
+        >>> obj.signals
+
+        """
+        return {k: v for k, v in self.layers.items() if v.type == "signal"}
+
+    @property
+    def dielectrics(self) -> dict[str, Layer]:
+        """All dielectric layers.
+
+        Returns
+        -------
+        dict[str, :class:`ansys.aedt.core.modules.layer_stackup.Layer`]
+           Dielectric layers.
+
+        References
+        ----------
+        >>> oEditor.GetAllLayerNames()
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layers
+        >>> obj = Layers()
+        >>> obj.dielectrics
+
+        """
+        return {k: v for k, v in self.layers.items() if v.type == "dielectric"}
+
+    @property
+    def drawings(self) -> dict[str, Layer]:
+        """All stackup layers.
+
+        Returns
+        -------
+        dict[str, :class:`ansys.aedt.core.modules.layer_stackup.Layer`]
+           Drawing layers.
+
+        References
+        ----------
+        >>> oEditor.GetAllLayerNames()
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layers
+        >>> obj = Layers()
+        >>> obj.drawings
+
+        """
+        return {k: v for k, v in self.layers.items() if v.type in ["signal", "via", "dielectric"]}
+
+    @property
+    def all_diel_layers(self) -> list[Layer]:
+        """All dielectric layers.
+
+        Returns
+        -------
+        List of :class:`ansys.aedt.core.modules.layer_stackup.Layer`
+            List of dielectric layers.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layers
+        >>> obj = Layers()
+        >>> obj.all_diel_layers
+
+        """
+        return [v for k, v in self.layers.items() if v.type == "dielectric"]
+
+    @pyaedt_function_handler()
+    def layer_id(self, name: str) -> int | None:
+        """Retrieve a layer ID.
+
+        Parameters
+        ----------
+        name : str
+            Name of the layer.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modules.layer_stackup.Layer`
+            Layer objecy if the layer name exists.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layers
+        >>> obj = Layers()
+        >>> obj.layer_id(name="MyObject")
+
+        """
+        for el in self.layers:
+            if self.layers[el].name == name:
+                return el
+        return None
+
+    @property
+    def layers(self) -> dict[int, Layer]:
+        """Refresh all layers in the current stackup.
+
+        Returns
+        -------
+         dict[int, :class:`ansys.aedt.core.modules.layer_stackup.Layer`]
+            Number of layers in the current stackup.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layers
+        >>> obj = Layers()
+        >>> obj.layers
+
+        """
+        layers = {}
+        for el in self.all_layers:
+            o = Layer(self, "signal")
+            o.name = el
+            infos = self.oeditor.GetLayerInfo(el)
+            infos = [i.split(": ") for i in infos]
+            infosdict = {i[0].strip(): i[1].strip() for i in infos}
+            o.id = int(infosdict["LayerId"])
+            if infosdict["Type"] == "metalizedsignal":
+                o.type = "signal"
+                o._is_negative = True
+            else:
+                o.type = infosdict["Type"]
+                o._is_negative = False
+            o._locked = str_to_bool(infosdict["IsLocked"])
+            o._top_bottom = infosdict["TopBottomAssociation"].lower()
+            o._is_visible = str_to_bool(infosdict["IsVisible"])
+            if "IsVisiblePath" in infosdict:
+                o._is_visible_path = str_to_bool(infosdict["IsVisiblePath"])
+                o._is_visible_pad = str_to_bool(infosdict["IsVisiblePad"])
+                o._is_visible_component = str_to_bool(infosdict["IsVisibleComponent"])
+                o._is_visible_shape = str_to_bool(infosdict["IsVisibleShape"])
+                o._is_visible_hole = str_to_bool(infosdict["IsVisibleHole"])
+            o._color = _getRGBfromI(int(infosdict["Color"][:-1]))
+            if o.type in ["signal", "dielectric", "via"]:
+                o._index = int(infosdict["Index"])
+                tck = decompose_variable_value(infosdict["LayerThickness"])
+                o._thickness = tck[0]
+                o._thickness_units = tck[1] if tck[1] else "meter"
+                tck = decompose_variable_value(infosdict["LowerElevation0"])
+
+                o._lower_elevation = tck[0]
+                o.LengthUnit = tck[1] if tck[1] else "meter"
+                o._fillmaterial = infosdict["FillMaterial0"]
+                o._material = infosdict["Material0"]
+                if "EtchFactor" in infosdict:
+                    o._useetch = True
+                    o._etch = decompose_variable_value(infosdict["EtchFactor"])[0]
+                if "Roughness0 Type" in infosdict:
+                    o._user = True
+                    o._RMdl = infosdict["Roughness0 Type"]
+                    o._NR = infosdict["Roughness0"].split(", ")[0]
+                    o._HRatio = decompose_variable_value(infosdict["Roughness0"].split(", ")[1])[0]
+                if "BottomRoughness0 Type" in infosdict:
+                    o._user = True
+                    o._BRMdl = infosdict["BottomRoughness0 Type"]
+                    o._BNR = infosdict["BottomRoughness0"].split(", ")[0]
+                    o._BHRatio = decompose_variable_value(infosdict["BottomRoughness0"].split(", ")[1])[0]
+                if "SideRoughness0 Type" in infosdict:
+                    o._user = True
+                    o._SRMdl = infosdict["SideRoughness0 Type"]
+                    o._SNR = infosdict["SideRoughness0"].split(", ")[0]
+                    o._SHRatio = decompose_variable_value(infosdict["SideRoughness0"].split(", ")[1])[0]
+            layers[o.id] = o
+        return layers
+
+    @pyaedt_function_handler()
+    def add_layer(
+        self,
+        layer: str,
+        layer_type: str = "signal",
+        thickness: str = "0mm",
+        elevation: str = "0mm",
+        material: str = "copper",
+        isnegative: bool = False,
+    ) -> Layer:
+        """Add a layer.
+
+        Parameters
+        ----------
+        layer : str
+            Name of the layer.
+        layer_type : str, optional
+            Type of the layer. The default is ``"signal"``.
+        thickness : str, optional
+            Thickness with units. The default is ``"0mm"``.
+        elevation : str, optional
+            Elevation with units. The default is ``"0mm"``.
+        material : str, optional
+            Name of the material. The default is ``"copper"``.
+        isnegative : bool, optional
+            If ``True``, the geometry on the layer is cut away from the layer. The default is ``False``.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modules.layer_stackup.Layer`
+            Layer object.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layers
+        >>> obj = Layers()
+        >>> obj.add_layer(layer="TOP")
+
+        """
+        newlayer = Layer(self, layer_type, isnegative)
+        newlayer.name = layer
+        newlayer._thickness = thickness
+
+        if elevation == "0mm":
+            el = (
+                0
+                if list(self.layers.values())[0].type not in ["dielectric", "signal", "via"]
+                else f"{list(self.layers.values())[0].upper_elevation}{list(self.layers.values())[0].LengthUnit}"
+            )
+            if el:
+                newlayer._lower_elevation = el
+            else:
+                newlayer._lower_elevation = "0mm"
+        else:
+            newlayer._lower_elevation = elevation
+        newlayer._material = material
+        newlayer.create_stackup_layer()
+
+        return self.layers[newlayer.id]
+
+    @staticmethod
+    def _get_argument_value(args: list, argument: str):
+        if argument in args:
+            return args[args.index(argument) + 1]
+        return None
+
+    @staticmethod
+    def _set_argument_value(args: list, argument: str, value) -> None:
+        if argument in args:
+            args[args.index(argument) + 1] = value
+
+    @staticmethod
+    def _get_stackup_sublayer(layer_args: list) -> list | None:
+        for layer_arg in layer_args:
+            if isinstance(layer_arg, list) and layer_arg and layer_arg[0] == "NAME:Sublayer":
+                return layer_arg
+        return None
+
+    @classmethod
+    def _is_generated_dielectric_layer(cls, layer_args: list) -> bool:
+        name = cls._get_argument_value(layer_args, "Name:=")
+        return isinstance(name, str) and name.startswith("pyaedt_diel")
+
+    @staticmethod
+    def _get_layer_quantity(value, default_unit=None) -> Quantity:
+        quantity = Quantity(value)
+        if default_unit and not quantity.unit:
+            quantity = Quantity(value, default_unit)
+        return quantity
+
+    @classmethod
+    def _get_layer_value(cls, value, default_unit=None):
+        quantity = cls._get_layer_quantity(value, default_unit)
+        if default_unit and quantity.unit:
+            quantity = quantity.to(default_unit)
+        return float(quantity)
+
+    @staticmethod
+    def _format_layer_quantity(value, default_unit=None) -> str:
+        value = round(value, 12)
+        return str(Quantity(value, default_unit)) if default_unit else str(value)
+
+    @classmethod
+    def _add_layer_thickness(cls, first_thickness, second_thickness, default_unit=None) -> str:
+        try:
+            return str(
+                cls._get_layer_quantity(first_thickness, default_unit)
+                + cls._get_layer_quantity(second_thickness, default_unit)
+            )
+        except (TypeError, ValueError):
+            return f"({first_thickness})+({second_thickness})"
+
+    @classmethod
+    def _are_adjacent_stackup_sublayers(
+        cls, first_sublayer: list, second_sublayer: list, default_unit=None
+    ) -> tuple[bool, str | None]:
+        first_lower_elevation = cls._get_argument_value(first_sublayer, "LowerElevation:=")
+        first_thickness = cls._get_argument_value(first_sublayer, "Thickness:=")
+        second_lower_elevation = cls._get_argument_value(second_sublayer, "LowerElevation:=")
+        second_thickness = cls._get_argument_value(second_sublayer, "Thickness:=")
+        if None in [first_lower_elevation, first_thickness, second_lower_elevation, second_thickness]:
+            return False, None
+
+        try:
+            first_lower_elevation = cls._get_layer_quantity(first_lower_elevation, default_unit)
+            first_upper_elevation = first_lower_elevation + cls._get_layer_quantity(first_thickness, default_unit)
+            second_lower_elevation = cls._get_layer_quantity(second_lower_elevation, default_unit)
+            second_upper_elevation = second_lower_elevation + cls._get_layer_quantity(second_thickness, default_unit)
+        except (TypeError, ValueError):
+            return False, None
+
+        if abs(float(first_upper_elevation - second_lower_elevation)) <= 1e-12:
+            return True, str(first_lower_elevation)
+        if abs(float(second_upper_elevation - first_lower_elevation)) <= 1e-12:
+            return True, str(second_lower_elevation)
+        return False, None
+
+    @classmethod
+    def _ensure_unique_layer_ids(cls, args: list) -> list:
+        used_ids = set()
+        layer_ids = []
+        for layer_args in args:
+            if isinstance(layer_args, list):
+                layer_id = cls._get_argument_value(layer_args, "ID:=")
+                if layer_id is not None:
+                    layer_ids.append(int(layer_id))
+
+        next_id = max(layer_ids, default=0) + 1
+        for layer_args in args:
+            if not isinstance(layer_args, list):
+                continue
+            layer_id = cls._get_argument_value(layer_args, "ID:=")
+            if layer_id is None:
+                continue
+            layer_id = int(layer_id)
+            if layer_id in used_ids:
+                while next_id in used_ids:
+                    next_id += 1
+                cls._set_argument_value(layer_args, "ID:=", next_id)
+                used_ids.add(next_id)
+                next_id += 1
+            else:
+                used_ids.add(layer_id)
+        return args
+
+    @classmethod
+    def _get_stackup_sublayer_interval(cls, sublayer: list, default_unit=None) -> tuple[float, float] | None:
+        lower_elevation = cls._get_argument_value(sublayer, "LowerElevation:=")
+        thickness = cls._get_argument_value(sublayer, "Thickness:=")
+        if None in [lower_elevation, thickness]:
+            return None
+        try:
+            lower_elevation = cls._get_layer_value(lower_elevation, default_unit)
+            thickness = cls._get_layer_value(thickness, default_unit)
+        except (TypeError, ValueError):
+            return None
+        return lower_elevation, lower_elevation + thickness
+
+    @classmethod
+    def _split_dielectric_layers_on_signals(cls, args: list, default_unit=None) -> list:
+        """Split dielectric layer arguments around signal layers and update signal fill materials."""
+        signal_layers = []
+        for layer_args in args:
+            if (
+                isinstance(layer_args, list)
+                and layer_args
+                and layer_args[0] == "NAME:stackup layer"
+                and cls._get_argument_value(layer_args, "Type:=") == "signal"
+            ):
+                sublayer = cls._get_stackup_sublayer(layer_args)
+                interval = cls._get_stackup_sublayer_interval(sublayer, default_unit) if sublayer else None
+                if interval:
+                    signal_layers.append((layer_args, sublayer, interval))
+
+        split_args = []
+        split_index = 1
+        tolerance = 1e-12
+        for layer_args in args:
+            if not (
+                isinstance(layer_args, list)
+                and layer_args
+                and layer_args[0] == "NAME:stackup layer"
+                and cls._get_argument_value(layer_args, "Type:=") == "dielectric"
+            ):
+                split_args.append(layer_args)
+                continue
+
+            sublayer = cls._get_stackup_sublayer(layer_args)
+            interval = cls._get_stackup_sublayer_interval(sublayer, default_unit) if sublayer else None
+            material = cls._get_argument_value(sublayer, "Material:=") if sublayer else None
+            if not interval or not material:
+                split_args.append(layer_args)
+                continue
+
+            segments = [interval]
+            for _, signal_sublayer, signal_interval in signal_layers:
+                signal_lower, signal_upper = signal_interval
+                if signal_upper <= interval[0] + tolerance or signal_lower >= interval[1] - tolerance:
+                    continue
+
+                cls._set_argument_value(signal_sublayer, "FillMaterial:=", material)
+                new_segments = []
+                for segment_lower, segment_upper in segments:
+                    if signal_upper <= segment_lower + tolerance or signal_lower >= segment_upper - tolerance:
+                        new_segments.append((segment_lower, segment_upper))
+                        continue
+                    if segment_lower < signal_lower - tolerance:
+                        new_segments.append((segment_lower, signal_lower))
+                    if signal_upper < segment_upper - tolerance:
+                        new_segments.append((signal_upper, segment_upper))
+                segments = new_segments
+
+            segments.sort(key=lambda segment: segment[0], reverse=True)
+            for segment_index, (segment_lower, segment_upper) in enumerate(segments):
+                split_layer_args = layer_args if segment_index == 0 else deepcopy(layer_args)
+                split_sublayer = cls._get_stackup_sublayer(split_layer_args)
+                cls._set_argument_value(
+                    split_sublayer, "LowerElevation:=", cls._format_layer_quantity(segment_lower, default_unit)
+                )
+                cls._set_argument_value(
+                    split_sublayer,
+                    "Thickness:=",
+                    cls._format_layer_quantity(segment_upper - segment_lower, default_unit),
+                )
+                if segment_index > 0:
+                    name = cls._get_argument_value(split_layer_args, "Name:=")
+                    cls._set_argument_value(split_layer_args, "Name:=", f"{name}_split_{split_index}")
+                    split_index += 1
+                split_args.append(split_layer_args)
+        return cls._ensure_unique_layer_ids(split_args)
+
+    @classmethod
+    def _merge_adjacent_dielectric_layers(cls, args: list, default_unit=None) -> list:
+        """Merge adjacent dielectric layer arguments that use the same material."""
+        merged_args = []
+        previous_dielectric_layer_args = None
+        previous_dielectric_sublayer = None
+        previous_dielectric_material = None
+        previous_dielectric_index = None
+        for layer_args in args:
+            if not (
+                isinstance(layer_args, list)
+                and layer_args
+                and layer_args[0] == "NAME:stackup layer"
+                and cls._get_argument_value(layer_args, "Type:=") == "dielectric"
+            ):
+                merged_args.append(layer_args)
+                continue
+
+            sublayer = cls._get_stackup_sublayer(layer_args)
+            material = cls._get_argument_value(sublayer, "Material:=") if sublayer else None
+
+            if (
+                material
+                and previous_dielectric_material
+                and material.casefold() == previous_dielectric_material.casefold()
+            ):
+                layers_are_adjacent, lower_elevation = cls._are_adjacent_stackup_sublayers(
+                    previous_dielectric_sublayer, sublayer, default_unit
+                )
+                if layers_are_adjacent:
+                    merge_into_current = cls._is_generated_dielectric_layer(
+                        previous_dielectric_layer_args
+                    ) and not cls._is_generated_dielectric_layer(layer_args)
+                    target_sublayer = sublayer if merge_into_current else previous_dielectric_sublayer
+                    thickness = cls._add_layer_thickness(
+                        cls._get_argument_value(previous_dielectric_sublayer, "Thickness:="),
+                        cls._get_argument_value(sublayer, "Thickness:="),
+                        default_unit,
+                    )
+                    cls._set_argument_value(target_sublayer, "Thickness:=", thickness)
+                    if lower_elevation:
+                        cls._set_argument_value(target_sublayer, "LowerElevation:=", lower_elevation)
+                    if merge_into_current:
+                        merged_args.pop(previous_dielectric_index)
+                        merged_args.append(layer_args)
+                        previous_dielectric_layer_args = layer_args
+                        previous_dielectric_sublayer = sublayer
+                        previous_dielectric_material = material
+                        previous_dielectric_index = len(merged_args) - 1
+                    continue
+
+            merged_args.append(layer_args)
+            previous_dielectric_layer_args = layer_args
+            previous_dielectric_sublayer = sublayer
+            previous_dielectric_material = material
+            previous_dielectric_index = len(merged_args) - 1
+        return cls._ensure_unique_layer_ids(merged_args)
+
+    @pyaedt_function_handler()
+    def change_stackup_type(self, mode: str = "MultiZone", number_zones: int = 3) -> bool:
+        """Change the stackup type between Multizone, Overlap and Laminate.
+
+        Parameters
+        ----------
+        mode : str, optional
+            Stackup type. Default is `"Multizone"`. Options are `"Overlap"` and `"Laminate"`.
+        number_zones : int, optional
+            Number of zones of multizone. By default all layers will be enabled in all zones.
+
+        Returns
+        -------
+        bool
+            `True` if successful.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modules.layer_stackup import Layers
+        >>> obj = Layers()
+        >>> obj.change_stackup_type(mode="axis", number_zones=[1, 2, 3])
+
+        """
+        if mode.lower() == "multizone":
+            zones = ["NAME:Zones", "Primary"]
+            for i in range(number_zones):
+                zones.append(f"Zone{i + 1}")
+            args = ["NAME:layers", "Mode:=", "Multizone", zones, ["NAME:pps"]]
+        elif mode.lower() == "overlap":
+            args = ["NAME:layers", "Mode:=", "Overlap", ["NAME:pps"]]
+        elif mode.lower() == "laminate":
+            args = ["NAME:layers", "Mode:=", "Laminate", ["NAME:pps"]]
+        else:
+            self.logger.error("Stackup mode has to be Multizone, Overlap or Laminate.")
+            return False
+        len_layers_list = len(list(self.layers.values())) + 1
+        for idx, v in enumerate(list(self.layers.values())):
+            if v.type in ["signal", "dielectric"]:
+                if mode.lower() == "multizone":
+                    v._zones = [i for i in range(number_zones)]
+                else:
+                    v._zones = []
+            if mode.lower() == "overlap" and v.type == "signal":
+                if v.fill_material != "":
+                    new_v = Layer(self, layertype="dielectric")
+                    new_v.name = f"pyaedt_diel_{idx}"
+                    new_v._thickness = v.thickness
+                    new_v._thickness_units = v.thickness_units
+                    new_v._lower_elevation = v.lower_elevation
+                    new_v._material = self._app.materials[v.fill_material].name
+                    new_v.id = len_layers_list
+                    len_layers_list += 1
+                    args.append(new_v._get_layer_arg)
+            args.append(v._get_layer_arg)
+        if mode.lower() == "overlap":
+            args = self._merge_adjacent_dielectric_layers(args, self.LengthUnit)
+        else:
+            args = self._split_dielectric_layers_on_signals(args, self.LengthUnit)
+        self.oeditor.ChangeLayers(args)
+        return True

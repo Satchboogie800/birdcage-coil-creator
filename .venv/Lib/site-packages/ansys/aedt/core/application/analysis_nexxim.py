@@ -1,0 +1,695 @@
+# -*- coding: utf-8 -*-
+#
+# Copyright (C) 2021 - 2026 Synopsys, Inc. and ANSYS, Inc. All rights reserved.
+# SPDX-License-Identifier: MIT
+#
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ansys.aedt.core.modeler.schematic import ModelerNexxim
+
+from ansys.aedt.core.application.analysis import Analysis
+from ansys.aedt.core.base import PyAedtBase
+from ansys.aedt.core.generic.configurations import ConfigurationsNexxim
+from ansys.aedt.core.generic.general_methods import pyaedt_function_handler
+from ansys.aedt.core.generic.settings import settings
+from ansys.aedt.core.modeler.circuits.object_3d_circuit import CircuitComponent
+from ansys.aedt.core.modeler.circuits.object_3d_circuit import Excitations
+from ansys.aedt.core.modules.boundary.circuit_boundary import CurrentSinSource
+from ansys.aedt.core.modules.boundary.circuit_boundary import PowerIQSource
+from ansys.aedt.core.modules.boundary.circuit_boundary import PowerSinSource
+from ansys.aedt.core.modules.boundary.circuit_boundary import Sources
+from ansys.aedt.core.modules.boundary.circuit_boundary import VoltageDCSource
+from ansys.aedt.core.modules.boundary.circuit_boundary import VoltageFrequencyDependentSource
+from ansys.aedt.core.modules.boundary.circuit_boundary import VoltageSinSource
+from ansys.aedt.core.modules.setup_templates import SetupKeys
+from ansys.aedt.core.modules.solve_setup import SetupCircuit
+
+if TYPE_CHECKING:
+    from ansys.aedt.core.modules.boundary.common import BoundaryObject
+    from ansys.aedt.core.visualization.post.post_circuit import PostProcessorCircuit
+
+
+class FieldAnalysisCircuit(Analysis, PyAedtBase):
+    """Provides the Field Analysis Circuit interface for Nexxim.
+
+    This class is for circuit analysis setup in Nexxim. It is automatically
+    initialized by a call from an application such as Circuit, Twin Builder,
+    or Maxwell Circuit.
+
+    Parameters
+    ----------
+    application : str
+        Name of the application. Options are ``"Circuit Design"``,
+        ``"Twin Builder"``, or ``"Maxwell Circuit"``.
+    project : str
+        Name of the project to select or the full path to the project
+        or AEDTZ archive to open.
+    design : str
+        Name of the design to select.
+    solution_type : str
+        Solution type to apply to the design.
+    setup : str, optional
+        Name of the setup to use as the nominal. The default is
+        ``None``, in which case the active setup is used or
+        nothing is used.
+    version : str, optional
+        Version of AEDT to use. The default is ``None``, in which case
+        the active version or latest installed version is used.
+        This parameter is ignored when a script is launched within AEDT.
+    non_graphical : bool, optional
+        Whether to launch AEDT in non-graphical mode. The default
+        is ``False``, in which case AEDT is launched in graphical mode.
+        This parameter is ignored when a script is launched within AEDT.
+    new_desktop : bool, optional
+        Whether to launch an instance of AEDT in a new thread, even if
+        another instance of the ``specified_version`` is active on the
+        machine. The default is ``False``. This parameter is ignored when
+        a script is launched within AEDT.
+    close_on_exit : bool, optional
+        Whether to release AEDT on exit. The default is ``False``.
+    student_version : bool, optional
+        Whether to open the AEDT student version. The default is
+        ``False``. This parameter is ignored when a script is launched
+        within AEDT.
+    machine : str, optional
+        Machine name to connect the oDesktop session to. This parameter works only on
+        2022 R2 or later. The remote server must be up and running with the command
+        `"ansysedt.exe -grpcsrv portnum"`. If the machine is `"localhost"`, the server
+        starts if it is not present. The default is ``""``.
+    port : int, optional
+        Port number on which to start the oDesktop communication on an already existing server.
+        This parameter is ignored when creating a new server. It works only in 2022 R2 or later.
+        The remote server must be up and running with the command `"ansysedt.exe -grpcsrv portnum"`.
+        The default is ``0``.
+    aedt_process_id : int, optional
+        Process ID for the instance of AEDT to point PyAEDT at. The default is
+        ``None``. This parameter is only used when ``new_desktop = False``.
+    remove_lock : bool, optional
+        Whether to remove lock to project before opening it or not.
+        The default is ``False``, which means to not unlock
+        the existing project if needed and raise an exception.
+
+    Examples
+    --------
+    >>> from ansys.aedt.core import Circuit
+    >>> circuit = Circuit()
+    >>> circuit.post
+
+    """
+
+    def __init__(
+        self,
+        application: str,
+        project: str,
+        design: str,
+        solution_type: str,
+        setup: str = None,
+        version: str = None,
+        non_graphical: bool = False,
+        new_desktop: bool = False,
+        close_on_exit: bool = False,
+        student_version: bool = False,
+        machine: str = "",
+        port: int = 0,
+        aedt_process_id: int = None,
+        remove_lock: bool = False,
+    ):
+        Analysis.__init__(
+            self,
+            application,
+            project,
+            design,
+            solution_type,
+            setup,
+            version,
+            non_graphical,
+            new_desktop,
+            close_on_exit,
+            student_version,
+            machine,
+            port,
+            aedt_process_id,
+            remove_lock=remove_lock,
+        )
+
+        self._modeler = None
+        self._post = None
+        self._internal_excitations = {}
+        self._internal_sources = None
+        self._configurations = ConfigurationsNexxim(self)
+        if not settings.lazy_load:
+            self._modeler = self.modeler
+            self._post = self.post
+
+    @property
+    def configurations(self) -> ConfigurationsNexxim:
+        """Property to import and export configuration files.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.generic.configurations.ConfigurationsNexxim`
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> circuit = Circuit()
+        >>> circuit.configurations
+
+        """
+        return self._configurations
+
+    @pyaedt_function_handler()
+    def delete_setup(self, name: str) -> bool:
+        """Delete a setup.
+
+        Parameters
+        ----------
+        name : str
+            Name of the setup.
+
+        Returns
+        -------
+        bool
+            ``True`` when successful, ``False`` when failed.
+
+        References
+        ----------
+        >>> oModule.RemoveSimSetup
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> circuit = Circuit()
+        >>> circuit.delete_setup("Setup1")
+
+        """
+        if name in self.setup_names:
+            self.oanalysis.RemoveSimSetup([name])
+            for s in self.setups:
+                if s.name == name:
+                    self.setups.remove(s)
+            return True
+        return False
+
+    @pyaedt_function_handler()
+    def push_down(self, component: CircuitComponent | str) -> bool:
+        """Push-down to the child component and reinitialize the Circuit object.
+
+        Parameters
+        ----------
+        component : str or :class:`ansys.aedt.core.modeler.cad.object_3d.circuit.CircuitComponent`
+            Component to initialize.
+
+        Returns
+        -------
+        bool
+            ``True`` when successful, ``False`` when failed.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> circuit = Circuit()
+        >>> circuit.push_down("U1")
+
+        """
+        out_name = ""
+        if isinstance(component, CircuitComponent):
+            out_name = self.design_name + ":" + component.component_info["RefDes"]
+        elif "U" == component[0]:
+            out_name = self.design_name + ":" + component
+        elif ":" not in component:
+            for v in self.modeler.components.components:
+                if component == v.composed_name.split(";")[0].split("@")[1]:
+                    out_name = self.design_name + ":" + v.component_info["RefDes"]
+        else:
+            out_name = component
+        try:
+            self.desktop_class.active_design(self.oproject, out_name, self.design_type)
+            self.__init__(project=self.project_name, design=out_name)
+        except Exception:  # pragma: no cover
+            return False
+        return True
+
+    @pyaedt_function_handler()
+    def pop_up(self) -> bool:
+        """Pop-up to parent Circuit design and reinitialize Circuit object.
+
+        Returns
+        -------
+        bool
+            ``True`` when successful, ``False`` when failed.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> circuit = Circuit()
+        >>> circuit.pop_up()
+
+        """
+        try:
+            parent_name = self.odesign.GetName().split(";")[1].split("/")[0]
+            self.desktop_class.active_design(self.oproject, parent_name, self.design_type)
+            self.__init__(project=self.project_name, design=parent_name)
+        except Exception:
+            return False
+        return True
+
+    @property
+    def post(self) -> PostProcessorCircuit:
+        """PostProcessor.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.visualization.post.post_circuit.PostProcessorCircuit`
+            PostProcessor object.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> circuit = Circuit()
+        >>> circuit.post
+
+        """
+        if self._post is None and self._odesign:
+            from ansys.aedt.core.visualization.post import post_processor
+
+            self._post = post_processor(self)
+        return self._post
+
+    @property
+    def modeler(self) -> "ModelerNexxim":
+        """Modeler object.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modeler.schematic.ModelerNexxim`
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> circuit = Circuit()
+        >>> circuit.modeler
+
+        """
+        if self._modeler is None and self._odesign:
+            self.logger.reset_timer()
+            from ansys.aedt.core.modeler.schematic import ModelerNexxim
+
+            self._modeler = ModelerNexxim(self)
+            self.logger.info_timer("Modeler class has been initialized!")
+
+        return self._modeler
+
+    @property
+    def setup_names(self) -> list:
+        """Setup names.
+
+        References
+        ----------
+        >>> oModule.GetAllSolutionSetups
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> circuit = Circuit()
+        >>> circuit.setup_names
+
+        """
+        return [i.split(" : ")[0] for i in self.oanalysis.GetAllSolutionSetups()]
+
+    @property
+    def source_names(self) -> list:
+        """Get all source names.
+
+        Returns
+        -------
+        list
+            List of source names.
+
+        References
+        ----------
+        >>> oDesign.GetChildObject("Excitations").GetChildNames()
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> circuit = Circuit()
+        >>> circuit.source_names
+
+        """
+        return list(self.get_oo_name(self.odesign, "Excitations"))
+
+    @property
+    def source_objects(self) -> list:
+        """Get all source objects.
+
+        Returns
+        -------
+        list
+            List of source objects.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> circuit = Circuit()
+        >>> circuit.source_objects
+
+        """
+        return [self.sources[name] for name in self.sources]
+
+    @property
+    def sources(self) -> list[Sources]:
+        """Get all sources.
+
+        Returns
+        -------
+        list[:class:`ansys.aedt.core.modules.boundary.circuit_boundary.Sources`]
+            List of sources.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> circuit = Circuit()
+        >>> circuit.sources
+
+        """
+        props = {}
+        if not self._internal_sources:
+            for source in self.source_names:
+                props[source] = Sources(self, source)
+                if props[source].source_type == "PowerSin":
+                    props[source] = PowerSinSource(self, source)
+                elif props[source].source_type == "PowerIQ":
+                    props[source] = PowerIQSource(self, source)
+                elif props[source].source_type == "VoltageFrequencyDependent":
+                    props[source] = VoltageFrequencyDependentSource(self, source)
+                elif props[source].source_type == "VoltageDC":
+                    props[source] = VoltageDCSource(self, source)
+                elif props[source].source_type == "VoltageSin":
+                    props[source] = VoltageSinSource(self, source)
+                elif props[source].source_type == "CurrentSin":
+                    props[source] = CurrentSinSource(self, source)
+            self._internal_sources = props
+        else:
+            props = self._internal_sources
+            if not sorted(list(props.keys())) == sorted(self.source_names):
+                a = set(str(x) for x in props.keys())
+                b = set(str(x) for x in self.source_names)
+                if len(a) == len(b):
+                    unmatched_new_name = list(b - a)[0]
+                    unmatched_old_name = list(a - b)[0]
+                    props[unmatched_new_name] = props[unmatched_old_name]
+                    del props[unmatched_old_name]
+                else:
+                    for old_source in props.keys():
+                        if old_source not in self.source_names:
+                            del props[old_source]
+                            break
+
+        return props
+
+    @property
+    def excitation_names(self) -> list[str]:
+        """Get all excitation names.
+
+        Returns
+        -------
+        list
+            List of excitation names. Excitations with multiple modes will return one
+            excitation for each mode.
+
+        References
+        ----------
+        >>> oModule.GetExcitations
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> circuit = Circuit()
+        >>> circuit.excitation_names
+
+        """
+        return [p.replace("IPort@", "").split(";")[0] for p in self.modeler.oeditor.GetAllPorts() if "IPort@" in p]
+
+    @property
+    def design_excitations(self) -> dict[str, BoundaryObject]:
+        """Get all excitation.
+
+        Returns
+        -------
+        dict[str, :class:`ansys.aedt.core.modules.boundary.common.BoundaryObject`]
+           Excitation boundaries.
+
+        References
+        ----------
+        >>> oModule.GetExcitations
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> circuit = Circuit()
+        >>> circuit.design_excitations
+
+        """
+        props = {}
+
+        if not self._internal_excitations:
+            for comp in self.modeler.schematic.components.values():
+                if comp.name in self.excitation_names:
+                    props[comp.name] = comp
+            self._internal_excitations = props
+        else:
+            props = self._internal_excitations
+            if not sorted(list(props.keys())) == sorted(self.excitation_names):
+                a = set(str(x) for x in props.keys())
+                b = set(str(x) for x in self.excitation_names)
+                if len(a) == len(b):
+                    unmatched_new_name = list(b - a)[0]
+                    unmatched_old_name = list(a - b)[0]
+                    props[unmatched_new_name] = props[unmatched_old_name]
+                    del props[unmatched_old_name]
+                else:
+                    if len(a) > len(b):
+                        for old_port in props.keys():
+                            if old_port not in self.excitation_names:
+                                del props[old_port]
+                                return props
+                    else:
+                        for new_port in self.excitation_names:
+                            if new_port not in props.keys():
+                                props[new_port] = Excitations(self, new_port)
+        return props
+
+    @pyaedt_function_handler()
+    def create_setup(self, name: str = "MySetupAuto", setup_type: str | None = None, **kwargs) -> SetupCircuit:
+        """Create a setup.
+
+        Parameters
+        ----------
+        name : str, optional
+            Name of the new setup. The default is ``"MySetupAuto"``.
+        setup_type : str, optional
+            Type of the setup. The default is ``None``, in which case
+            the default type is applied.
+        **kwargs : dict, optional
+            Extra arguments to set up the circuit.
+            Available keys depend on the setup chosen.
+            For more information, see
+            :doc:`../SetupTemplatesCircuit`.
+
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modules.solve_setup.SetupCircuit`
+            Setup object.
+
+        References
+        ----------
+        >>> oModule.AddLinearNetworkAnalysis
+        >>> oModule.AddDCAnalysis
+        >>> oModule.AddTransient
+        >>> oModule.AddQuickEyeAnalysis
+        >>> oModule.AddVerifEyeAnalysis
+        >>> oModule.AddAMIAnalysis
+
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> from ansys.aedt.core.generic.constants import Setups
+        >>> app = Circuit()
+        >>> app.create_setup(name="Setup1", setup_type=Setups.NexximLNA, Data="LINC 0GHz 4GHz 501")
+
+        """
+        if setup_type is None:
+            setup_type = self.design_solutions.default_setup
+        elif setup_type in SetupKeys.SetupNames:
+            setup_type = SetupKeys.SetupNames.index(setup_type)
+        name = self.generate_unique_setup_name(name)
+        setup = SetupCircuit(self, setup_type, name)
+        tmp_setups = self.setups
+        setup.create()
+        setup.auto_update = False
+
+        if "props" in kwargs:
+            for el in kwargs["props"]:
+                setup.props[el] = kwargs["props"][el]
+        for arg_name, arg_value in kwargs.items():
+            if arg_name == "props":
+                continue
+            if setup[arg_name] is not None:
+                setup[arg_name] = arg_value
+        setup.auto_update = True
+        setup.update()
+        self._setups = tmp_setups + [setup]
+        return setup
+
+    @pyaedt_function_handler()
+    def change_properties(
+        self,
+        aedt_object: object,
+        tab_name: str,
+        property_object: str,
+        property_names: list,
+        property_values: list,
+        property_types: list = None,
+    ) -> bool:
+        """Change multiple properties.
+
+        Parameters
+        ----------
+        aedt_object :
+            AEDT object. It can be oproject, odesign, oeditor or any of the objects to which the property belongs.
+        tab_name : str
+            Name of the tab to update. Options are ``BaseElementTab``, ``EM Design``, and
+            ``FieldsPostProcessorTab``. The default is ``BaseElementTab``.
+        property_object : str
+            Name of the property object.
+        property_names : list
+            List of property names. For example, ``["prop1", "prop2"]``.
+        property_values : list
+            List of property values corresponding to the property names.
+        property_types : list, optional
+            List of property types corresponding to the property names.
+            Values are  ``"Value"``, ``"ButtonText"``, ``"Hidden"``.
+
+        Returns
+        -------
+        bool
+            ``True`` when successful, ``False`` when failed.
+
+        References
+        ----------
+        >>> oEditor.ChangeProperty
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> circuit = Circuit()
+        >>> circuit.change_properties(circuit.odesign, "LocalVariableTab", "LocalVariables", ["Rload"], ["50ohm"])
+
+        """
+        button_list = [
+            "file",
+            "buffer_mode",
+            "logic_in",
+            "out_of_in",
+            "DataPattern",
+            "txrj",
+            "txpj",
+            "txuj",
+            "txcj",
+            "txrj",
+            "EyeMeasurementFunctions",
+        ]
+        if len(property_names) != len(property_values):
+            raise ValueError("``property_names`` and ``property_values`` must have the same length.")
+        if property_types and isinstance(property_types, str):
+            property_types = [property_types] * len(property_names)
+        elif property_types and len(property_types) != len(property_names):
+            raise ValueError("``property_names`` and ``property_types`` must have the same length.")
+        elif not property_types:
+            property_types = ["Value" if i not in button_list else "ButtonText" for i in property_names]
+        comp = [i for i in self.modeler.schematic.components.values() if i.composed_name == property_object][0]
+
+        if "buffer" in property_names:
+            comp.parameters["buffer"] = property_values[property_names.index("buffer")]
+        new_names = []
+        new_vals = []
+        new_types = []
+        for k, i, j in zip(property_names, property_values, property_types):
+            if k == "buffer":
+                continue
+            elif k == "buffer_mode":
+                comp.parameters["buffer_mode"] = i
+            else:
+                new_names.append(k)
+                new_vals.append(i)
+                new_types.append(j)
+
+        results = super().change_properties(aedt_object, tab_name, property_object, new_names, new_vals, new_types)
+        if results and "buffer" in property_names:
+            params = {i: k for i, k in zip(property_names, property_values)}
+            self._hide_circuit_ibis(params, comp)
+        return results
+
+    def _hide_circuit_ibis(self, params, comp):
+        input_buffer = False
+        output = False
+        if params["buffer"] == "input":
+            input_buffer = True
+            comp._change_property("buffer_mode", True, value_name="Hidden")
+        if params["buffer"] == "output":
+            output = True
+            comp._change_property("buffer_mode", True, value_name="Hidden")
+        if params["buffer"] == "input_output":
+            comp._change_property("buffer_mode", False, value_name="Hidden")
+            if params.get("buffer_mode"):
+                comp._change_property("buffer_mode", params["buffer_mode"])
+        if params["buffer"] == "three_state":
+            comp._change_property("buffer_mode", False, value_name="Hidden")
+            if params.get("buffer_mode"):
+                comp._change_property("buffer_mode", params["buffer_mode"])
+        comp._change_property("logic_in", True if input_buffer or output else False, value_name="Hidden")
+        comp._change_property("phase_delay", True if input_buffer else False, value_name="Hidden")
+        comp._change_property("UIorBPS", True if input_buffer else False, value_name="Hidden")
+        comp._change_property("UIorBPSValue", True if input_buffer else False, value_name="Hidden")
+        comp._change_property("repeat_count", True if input_buffer else False, value_name="Hidden")
+        comp._change_property("step_resp_num_ui", True if input_buffer else False, value_name="Hidden")
+        if self._aedt_version > "2025.2":
+            comp._change_property("DataPattern", True if input_buffer else False, value_name="Hidden")
+            comp._change_property("hold_last", True if input_buffer else False, value_name="Hidden")
+            comp._change_property("do_coding", True if input_buffer else False, value_name="Hidden")
+        else:
+            comp._change_property("BitPattern", True if input_buffer else False, value_name="Hidden")
+            comp._change_property("hold_last_bit", True if input_buffer else False, value_name="Hidden")
+            comp._change_property("do_encoding", True if input_buffer else False, value_name="Hidden")
+        comp._change_property("Disable_Tx_Jitter", True if input_buffer else False, value_name="Hidden")
+        comp._change_property("DCDFractionorTime", True if input_buffer else False, value_name="Hidden")
+        comp._change_property("dcd", True if input_buffer else False, value_name="Hidden")
+        comp._change_property("txrj", True if input_buffer else False, value_name="Hidden")
+        comp._change_property("txpj", True if input_buffer else False, value_name="Hidden")
+        comp._change_property("txuj", True if input_buffer else False, value_name="Hidden")
+        comp._change_property("txcj", True if input_buffer else False, value_name="Hidden")

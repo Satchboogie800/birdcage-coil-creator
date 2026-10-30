@@ -1,0 +1,56 @@
+// Proto file representing the EDB ViaGroup class
+
+syntax = "proto3";
+
+package ansys.api.edb.v1;
+
+import "ansys/api/edb/v1/edb_messages.proto";
+import "ansys/api/edb/v1/polygon_data.proto";
+import "ansys/api/edb/v1/refs.proto";
+import "ansys/api/edb/v1/hierarchy_obj.proto";
+
+// ViaGroup service definition
+service ViaGroupService {
+  // summary: Creates ViaGroups
+  rpc CreateWithPrimitives(ViaGroupCreateWithPrimitivesMessage) returns (EDBObjCollectionMessage) {}
+
+  // summary: Creates a ViaGroup with outline
+  // io_flags:
+  //   - buffer
+  //   - returns_future
+  rpc CreateWithOutline(ViaGroupCreateWithOutlineMessage) returns (EDBObjMessage) {}
+
+  // summary: Find the ViaGroup by name in the given layout
+  // io_flags:
+  //   - cache
+  rpc FindByName(ObjectNameInLayoutMessage) returns (EDBObjMessage) {}
+
+  // summary: Get the ViaGroup outline
+  // io_flags:
+  //   - cache
+  rpc GetOutline(EDBObjMessage) returns (PolygonDataMessage) {}
+
+  // summary: Get conductor percentage of the ViaGroup
+  // io_flags:
+  //   - cache
+  rpc GetConductorPercentage(EDBObjMessage) returns (google.protobuf.DoubleValue) {}
+
+  // summary: Check if the ViaGroup is persistent
+  // io_flags:
+  //   - cache
+  rpc IsPersistent(EDBObjMessage) returns (google.protobuf.BoolValue) {}
+}
+
+message ViaGroupCreateWithPrimitivesMessage {
+  EDBObjMessage layout = 1;
+  EDBObjCollectionMessage primitives = 2;
+  bool is_persistent = 3;
+}
+
+message ViaGroupCreateWithOutlineMessage {
+  EDBObjMessage layout = 1;
+  PolygonDataMessage points = 2;
+  double conductivity_ratio = 3;
+  LayerRefMessage layer = 4;
+  NetRefMessage net = 5;
+}

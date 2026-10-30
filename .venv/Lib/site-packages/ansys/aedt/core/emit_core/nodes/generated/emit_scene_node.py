@@ -1,0 +1,196 @@
+# -*- coding: utf-8 -*-
+#
+# Copyright (C) 2021 - 2026 Synopsys, Inc. and ANSYS, Inc. All rights reserved.
+# SPDX-License-Identifier: MIT
+#
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+from enum import Enum
+
+from ansys.aedt.core.emit_core.nodes.emit_node import EmitNode
+from ansys.aedt.core.internal.checks import min_aedt_version
+
+
+class EmitSceneNode(EmitNode):
+    """Provide EMIT scene node."""
+
+    def __init__(self, emit_obj, result_id, node_id) -> None:
+        EmitNode.__init__(self, emit_obj, result_id, node_id)
+        self._is_component = False
+
+    @property
+    @min_aedt_version("2025.2")
+    def node_type(self) -> str:
+        """The type of this emit node.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> rev = app.results.analyze()
+        >>> scene = rev.get_scene_node()
+        >>> scene.node_type
+
+        """
+        return self._node_type
+
+    @min_aedt_version("2025.2")
+    def add_emitter(self) -> EmitNode:
+        """Add a new emitter.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> rev = app.results.analyze()
+        >>> scene = rev.get_scene_node()
+        >>> emitter = scene.add_emitter()
+
+        """
+        return self._add_child_node("Emitter")
+
+    @min_aedt_version("2025.2")
+    def add_group(self) -> EmitNode:
+        """Add a new scene group.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> rev = app.results.analyze()
+        >>> scene = rev.get_scene_node()
+        >>> group = scene.add_group()
+
+        """
+        return self._add_child_node("Group")
+
+    @min_aedt_version("2025.2")
+    def import_cad(self, file_name: str, create_antennas: bool = False) -> EmitNode:
+        """Add an existing CAD file
+
+        Parameters
+        ----------
+        file_name : str
+            Full path to the file to import.
+        create_antennas : bool
+            Whether to automatically create antennas for any mounting points
+            defined in the CAD file (only applicable to gltf/glb files).
+
+        Returns
+        -------
+        node : EmitNode
+            The node.
+        """
+        return self._import(file_name, "CAD", create_antennas=create_antennas)
+
+    @min_aedt_version("2025.2")
+    def add_antenna(self) -> EmitNode:
+        """Add a new antenna.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> rev = app.results.analyze()
+        >>> scene = rev.get_scene_node()
+        >>> antenna = scene.add_antenna()
+
+        """
+        return self._add_child_node("Antenna")
+
+    @property
+    @min_aedt_version("2025.2")
+    def notes(self) -> str:
+        """Expand to view/edit notes stored with the project.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> rev = app.results.analyze()
+        >>> scene = rev.get_scene_node()
+        >>> scene.notes = "example_value"
+
+        """
+        val = self._get_property("Notes")
+        return val
+
+    @notes.setter
+    @min_aedt_version("2025.2")
+    def notes(self, value: str) -> None:
+        self._set_property("Notes", f"{value}")
+
+    class GroundPlaneNormalOption(Enum):
+        X_AXIS = "XAxis"
+        Y_AXIS = "YAxis"
+        Z_AXIS = "ZAxis"
+
+    @property
+    @min_aedt_version("2025.2")
+    def ground_plane_normal(self) -> GroundPlaneNormalOption:
+        """Specifies the axis of the normal to the ground plane.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> rev = app.results.analyze()
+        >>> scene = rev.get_scene_node()
+        >>> scene.ground_plane_normal = EmitSceneNode.GroundPlaneNormalOption.Z_AXIS
+
+        """
+        val = self._get_property("Ground Plane Normal")
+        try:
+            val = self.GroundPlaneNormalOption(val)
+        except ValueError:
+            val = self.GroundPlaneNormalOption[val.upper()]
+        return val
+
+    @ground_plane_normal.setter
+    @min_aedt_version("2025.2")
+    def ground_plane_normal(self, value: GroundPlaneNormalOption) -> None:
+        self._set_property("Ground Plane Normal", f"{value.value}")
+
+    @property
+    @min_aedt_version("2025.2")
+    def gp_position_along_normal(self) -> float:
+        """GP Position Along Normal.
+
+        Offset of ground plane in direction normal to the ground planes
+        orientation.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Emit
+        >>> app = Emit()
+        >>> rev = app.results.analyze()
+        >>> scene = rev.get_scene_node()
+        >>> scene.gp_position_along_normal = 0.0
+
+        """
+        val = self._get_property("GP Position Along Normal")
+        val = self._convert_from_internal_units(float(val), "Length")
+        return float(val)
+
+    @gp_position_along_normal.setter
+    @min_aedt_version("2025.2")
+    def gp_position_along_normal(self, value: float | str) -> None:
+        value = self._convert_to_internal_units(value, "Length")
+        self._set_property("GP Position Along Normal", f"{value}")

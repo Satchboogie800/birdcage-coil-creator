@@ -1,0 +1,3203 @@
+# -*- coding: utf-8 -*-
+#
+# Copyright (C) 2021 - 2026 Synopsys, Inc. and ANSYS, Inc. All rights reserved.
+# SPDX-License-Identifier: MIT
+#
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+"""The module contains these classes: ``Q2d``, ``Q3d``, and ``QExtractor``."""
+
+from pathlib import Path
+import re
+from typing import TYPE_CHECKING
+
+from ansys.aedt.core.application.analysis_3d import FieldAnalysis3D
+from ansys.aedt.core.base import PyAedtBase
+from ansys.aedt.core.generic.file_utils import generate_unique_name
+from ansys.aedt.core.generic.general_methods import pyaedt_function_handler
+from ansys.aedt.core.generic.numbers_utils import decompose_variable_value
+from ansys.aedt.core.generic.settings import settings
+from ansys.aedt.core.internal.checks import min_aedt_version
+from ansys.aedt.core.internal.errors import AEDTRuntimeError
+from ansys.aedt.core.mixins import CreateBoundaryMixin
+from ansys.aedt.core.modeler.geometry_operators import GeometryOperators as go
+from ansys.aedt.core.modules.boundary.common import BoundaryObject
+from ansys.aedt.core.modules.boundary.hfss_boundary import NearFieldSetup
+from ansys.aedt.core.modules.boundary.q3d_boundary import Matrix
+from ansys.aedt.core.modules.setup_templates import SetupKeys
+from ansys.aedt.core.modules.solve_setup import SetupQ3D
+from ansys.aedt.core.visualization.post.solution_data import SolutionData
+
+if TYPE_CHECKING:
+    from ansys.aedt.core.modeler.cad.object_3d import Object3d
+
+
+class QExtractor(FieldAnalysis3D, PyAedtBase):
+    """Provides the Q3D and Q2D application interface.
+
+    This class is the base class for Q3D and Q2D applications. It allows you to
+    create an interactive instance and connect to an existing design or create
+    a new design if one does not exist.
+
+    Parameters
+    ----------
+    application : str
+        Type of extractor. Options are ``"Q3D"`` for Q3D Extractor or
+        ``"EXTRACTOR2D"`` for 2D Extractor.
+    project : str, optional
+        Name of the project to select or the full path to the project
+        or AEDTZ archive to open. The default is ``None``, in which
+        case an attempt is made to get an active project. If no
+        projects are present, an empty project is created.
+    design : str, optional
+        Name of the design to select. The default is ``None``, in
+        which case an attempt is made to get an active design. If no
+        designs are present, an empty design is created.
+    solution_type : str, optional
+        Solution type to apply to the design. The default is
+        ``None``, in which case the default type is applied.
+    setup : str, optional
+        Name of the setup to use as the nominal. The default is
+        ``None``, in which case the active setup is used or
+        nothing is used.
+    version : str, int, float, optional
+        Version of AEDT to use. The default is ``None``, in which case
+        the active version or latest installed version is used.
+        This parameter is ignored when a script is launched within AEDT.
+        Examples of input values are ``261``, ``26.1``, ``2026.1``, ``"2026.1"``.
+    non_graphical : bool, optional
+        Whether to run AEDT in non-graphical mode. The default
+        is ``False``, in which case AEDT is launched in graphical mode.
+        This parameter is ignored when a script is launched within AEDT.
+    new_desktop : bool, optional
+        Whether to launch an instance of AEDT in a new thread, even if
+        another instance of the ``specified_version`` is active on the
+        machine. The default is ``False``. This parameter is ignored when
+        a script is launched within AEDT.
+    close_on_exit : bool, optional
+        Whether to release AEDT on exit. The default is ``False``.
+    student_version : bool, optional
+        Whether to open the AEDT student version. The default is
+        ``False``. This parameter is ignored when a script is launched
+        within AEDT.
+    machine : str, optional
+        Machine name to connect the oDesktop session to. This parameter works only on
+        2022 R2 or later. The remote server must be up and running with the command
+        `"ansysedt.exe -grpcsrv portnum"`. If the machine is `"localhost"`, the server
+        starts if it is not present.
+    port : int, optional
+        Port number on which to start the oDesktop communication on an already existing server.
+        This parameter is ignored when creating a new server. It works only in 2022 R2 or later.
+        The remote server must be up and running with the command `"ansysedt.exe -grpcsrv portnum"`.
+    aedt_process_id : int, optional
+        Process ID for the instance of AEDT to point PyAEDT at. The default is
+        ``None``. This parameter is only used when ``new_desktop = False``.
+    remove_lock : bool, optional
+        Whether to remove lock to project before opening it or not.
+        The default is ``False``, which means to not unlock
+        the existing project if needed and raise an exception.
+
+    """
+
+    @property
+    def design_file(self):
+        """Design file.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.q3d import QExtractor
+        >>> obj = QExtractor()
+        >>> obj.design_file
+
+        """
+        design_file = Path(self.working_directory) / "design_data.json"
+        return design_file
+
+    def __init__(
+        self,
+        application: str,
+        project: str | None = None,
+        design: str | None = None,
+        solution_type: str | None = None,
+        setup: str | None = None,
+        version: str | None = None,
+        non_graphical: bool | None = False,
+        new_desktop: bool | None = False,
+        close_on_exit: bool | None = False,
+        student_version: bool | None = False,
+        machine: str | None = "",
+        port: int | None = 0,
+        aedt_process_id: int | None = None,
+        remove_lock: bool | None = False,
+    ) -> None:
+        FieldAnalysis3D.__init__(
+            self,
+            application,
+            project,
+            design,
+            solution_type,
+            setup,
+            version,
+            non_graphical,
+            new_desktop,
+            close_on_exit,
+            student_version,
+            machine,
+            port,
+            aedt_process_id,
+            remove_lock=remove_lock,
+        )
+        self.matrices = []
+        for el in list(self.omatrix.ListReduceMatrixes()):
+            self.matrices.append(Matrix(self, el))
+
+    @pyaedt_function_handler()
+    def sources(self, matrix_index: int | None = 0, is_gc_sources: bool | None = True) -> list:
+        """List of matrix sources.
+
+        Parameters
+        ----------
+        matrix_index : int, optional
+            Matrix index in matrices list. Default is ``0`` to use main matrix with no reduction.
+        is_gc_sources : bool,
+            In Q3d, define if to return GC sources or RL sources. Default `True`.
+
+        Returns
+        -------
+        List
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.q3d import QExtractor
+        >>> obj = QExtractor()
+        >>> obj.sources()
+
+        """
+        return self.matrices[matrix_index].sources(is_gc_sources=is_gc_sources)
+
+    @pyaedt_function_handler()
+    def insert_reduced_matrix(
+        self,
+        operation_name: str,
+        assignment: list | str | None = None,
+        reduced_matrix: str | None = None,
+        new_net_name: str | None = None,
+        new_source_name: str | None = None,
+        new_sink_name: str | None = None,
+    ) -> Matrix:
+        """Insert a new reduced matrix.
+
+        Parameters
+        ----------
+        operation_name : str
+            Name of the operation to create.
+        assignment : list, str, optional
+            List of sources or nets or arguments needed for the operation. The default
+            is ``None``.
+        reduced_matrix : str, optional
+            Name of the reduced matrix. The default is ``None``.
+        new_net_name : str, optional
+            Name of the new net. The default is ``None``.
+        new_source_name : str, optional
+            Name of the new source. The default is ``None``.
+        new_sink_name : str, optional
+            Name of the new sink. The default is ``None``.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modules.q3d_boundary.Matrix`
+            Matrix object.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.q3d import QExtractor
+        >>> obj = QExtractor()
+        >>> obj.insert_reduced_matrix(operation_name="JoinParallel")
+
+        """
+        if not reduced_matrix:
+            reduced_matrix = generate_unique_name(operation_name)
+        matrix = Matrix(self, reduced_matrix, operation_name)
+
+        if not new_net_name:
+            new_net_name = generate_unique_name("Net")
+
+        if not new_source_name:
+            new_source_name = generate_unique_name("Source")
+
+        if not new_sink_name:
+            new_sink_name = generate_unique_name("Sink")
+
+        if matrix.create(assignment, new_net_name, new_source_name, new_sink_name):
+            self.matrices.append(matrix)
+        return matrix
+
+    @pyaedt_function_handler()
+    def get_all_sources(self):
+        """Get all setup sources.
+
+        Returns
+        -------
+        list of str
+            List of all setup sources.
+
+        References
+        ----------
+        >>> oModule.GetAllSources
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.q3d import QExtractor
+        >>> obj = QExtractor()
+        >>> obj.get_all_sources()
+
+        """
+        return self.sources(0, False)
+
+    @pyaedt_function_handler()
+    def get_traces_for_plot(
+        self,
+        get_self_terms: bool | None = True,
+        get_mutual_terms: bool | None = True,
+        first_element_filter: str | None = None,
+        second_element_filter: str | None = None,
+        category: str | None = "C",
+    ) -> list:
+        """Get a list of traces of specified designs ready to use in plot reports.
+
+        Parameters
+        ----------
+        get_self_terms : bool, optional
+            Whether to get self terms. The default is ``True``.
+        get_mutual_terms : bool, optional
+            Whether to get mutual terms. The default is ``True``.
+        first_element_filter : str, optional
+            Filter to apply to the first element of the equation.
+            This parameter accepts ``*`` and ``?`` as special characters. The default is ``None``.
+        second_element_filter : str, optional
+            Filter to apply to the second element of the equation.
+            This parameter accepts ``*`` and ``?`` as special characters. The default is ``None``.
+        category : str
+            Plot category name as in the report, including operator.
+            The default is ``"C"``, which is the plot category name for capacitance.
+
+        Returns
+        -------
+        list
+            Traces of specified designs ready to use in plot reports.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Q3d
+        >>> hfss = Q3d(project_path)
+        >>> hfss.get_traces_for_plot(first_element_filter="Bo?1", second_element_filter="GND*", category="C")
+
+        """
+        return self.matrices[0].get_sources_for_plot(
+            get_self_terms=get_self_terms,
+            get_mutual_terms=get_mutual_terms,
+            first_element_filter=first_element_filter,
+            second_element_filter=second_element_filter,
+            category=category,
+        )
+
+    @pyaedt_function_handler()
+    def export_mesh_stats(
+        self,
+        setup: str = None,
+        variations: str | None = "",
+        output_file: str | Path | None = None,
+        setup_type: str | None = "CG",
+    ) -> str:
+        """Export mesh statistics to a file.
+
+        Parameters
+        ----------
+        setup : str
+            Setup name.
+        variations : str, optional
+            Variation list. The default is ``""``.
+        output_file : str or :class:`pathlib.Path`, optional
+            Full path to the mesh statistics file. The default is ``None``, in which
+            case the working directory is used.
+        setup_type : str, optional
+            Setup type in Q3D. Options are ``"CG"``, ``"AC RL"``, and ``"DC RL"``. The
+            default is ``"CG"``.
+
+        Returns
+        -------
+        str
+            File path.
+
+        References
+        ----------
+        >>> oDesign.ExportMeshStats
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.q3d import QExtractor
+        >>> obj = QExtractor()
+        >>> obj.export_mesh_stats()
+
+        """
+        if not output_file:
+            output_file = Path(self.working_directory) / "meshstats.ms"
+        self.odesign.ExportMeshStats(setup, variations, setup_type, str(output_file))
+        return str(output_file)
+
+    @pyaedt_function_handler()
+    def edit_sources(
+        self,
+        cg: dict | None = None,
+        acrl: dict | None = None,
+        dcrl: dict | None = None,
+        harmonic_loss: dict | None = None,
+    ) -> bool:
+        """Set up the source loaded for Q3D or Q2D in multiple sources simultaneously.
+
+        Parameters
+        ----------
+        cg : dict, optional
+            Dictionary of input sources to modify the module and phase of a CG solution.
+            Dictionary values can be:
+            - 1 Magnitude to set up ``0deg`` as the default
+            - 2 Values tuple or list (magnitude and phase)
+        acrl : dict, optional
+            Dictionary of input sources to modify the module and phase of an ACRL solution.
+            Dictionary values can be:
+            - 1 Magnitude to set up 0deg as the default
+            - 2 Values tuple or list (magnitude and phase)
+        dcrl : dict, optional
+            Dictionary of input sources to modify the module and phase of a DCRL solution, This
+            parameter is only available for Q3D. Dictionary values can be:
+            - 1 Magnitude to set up ``0deg`` as the default
+            - 2 Values tuple or list (magnitude and phase)
+
+        harmonic_loss: dict, optional
+            Dictionary of real and imaginary currents for each source in order to compute harmonic loss.
+            Dictionary values can be:
+            - 1 Real part of the current
+            - 2 Imag part of the current
+
+        Returns
+        -------
+        bool
+            ``True`` when successful, ``False`` when failed.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Q3d
+        >>> q3d = Q3d(version="2026.1")
+        >>> sources_cg = {"Box1": ("1V", "0deg"), "Box1_2": "1V"}
+        >>> sources_acrl = {"Box1:Source1": ("5A", "0deg")}
+        Values can also be passed as lists instead of tuples.
+        >>> sources_dcrl = {"Box1_1:Source2": ["5V", "0deg"]}
+        Assuming to have two TAB files containing respectively the real and imaginary parts
+        of the current for the source ``Box1:Source1``.
+        >>> real_data_set = q3d.import_dataset1d("real_dataset_file_path", name="real_dataset")
+        >>> imag_data_set = q3d.import_dataset1d("imag_dataset_file_path", name="imag_dataset")
+        >>> harmonic_loss = {"Box1:Source1": (real_data_set.name, imag_data_set.name)}
+        >>> q3d.edit_sources(cg=sources_cg, acrl=sources_acrl, dcrl=sources_dcrl, harmonic_loss=harmonic_loss)
+
+        """
+        settings_ac = []
+        settings_cg = []
+        settings_dc = []
+        settings_harmonic_loss = []
+        if cg:
+            source_list = ["NAME:Source Names"]
+            if self.default_solution_type == "Q3D Extractor":
+                magnitude_list = ["NAME:Source Magnitudes"]
+                phase_list = ["NAME:Source Phases"]
+            else:
+                magnitude_list = ["NAME:Magnitude"]
+                phase_list = ["NAME:Phase"]
+
+            for key, vals in cg.items():
+                if key not in self.excitation_names:
+                    self.logger.error("Not existing net " + key)
+                    return False
+
+                source_list.append(key)
+                if isinstance(vals, str):
+                    magnitude_list.append(vals)
+                    phase_list.append("0deg")
+                else:
+                    magnitude_list.append(vals[0])
+                    phase_list.append(vals[1])
+
+            if self.default_solution_type == "Q3D Extractor":
+                settings_cg = ["NAME:Cap", "Value Type:=", "N", source_list, magnitude_list, phase_list]
+            else:
+                settings_cg = ["NAME:CGSources", source_list, magnitude_list, phase_list]
+
+        if acrl:
+            source_list = ["NAME:Source Names"]
+            magnitude_unit = "V"
+            sources = self.sources(0, False)
+
+            if self.default_solution_type == "Q3D Extractor":
+                magnitude_list = ["NAME:Source Magnitudes"]
+                phase_list = ["NAME:Source Phases"]
+            else:
+                magnitude_list = ["NAME:Magnitude"]
+                phase_list = ["NAME:Phase"]
+
+            for key, vals in acrl.items():
+                if key not in sources:
+                    self.logger.error("Not existing source " + key)
+                    return False
+
+                source_list.append(key)
+                if isinstance(vals, str):
+                    magnitude_list.append(vals)
+                    magnitude_unit = decompose_variable_value(vals)[1]
+                    phase_list.append("0deg")
+                else:
+                    magnitude_list.append(vals[0])
+                    magnitude_unit = decompose_variable_value(vals[0])[1]
+                    phase_list.append(vals[1])
+
+            if self.default_solution_type == "Q3D Extractor":
+                settings_ac = ["NAME:AC", "Value Type:=", magnitude_unit, source_list, magnitude_list, phase_list]
+            else:
+                settings_ac = ["NAME:RLSources", source_list, magnitude_list, phase_list]
+
+        if dcrl:
+            source_list = ["NAME:Source Names"]
+            magnitude_unit = "A"
+            sources = self.sources(0, False)
+
+            if self.default_solution_type == "Q3D Extractor":
+                magnitude_list = ["NAME:Source Magnitudes"]
+                phase_list = ["NAME:Source Phases"]
+            else:  # pragma: no cover
+                magnitude_list = ["NAME:Magnitude"]
+                phase_list = ["NAME:Source Phase"]
+
+            for key, vals in dcrl.items():
+                if key not in sources:  # pragma: no cover
+                    self.logger.error("Not existing source " + key)
+                    return False
+
+                source_list.append(key)
+                if isinstance(vals, str):
+                    magnitude_list.append(vals)
+                    magnitude_unit = decompose_variable_value(vals)[1]
+                    phase_list.append("0deg")
+                else:
+                    magnitude_list.append(vals[0])
+                    magnitude_unit = decompose_variable_value(vals[0])[1]
+                    phase_list.append(vals[1])
+
+            settings_dc = ["NAME:DC", "Value Type:=", magnitude_unit, source_list, magnitude_list, phase_list]
+
+        if harmonic_loss:
+            source_list = ["NAME:Source Names"]
+            source_real_dataset_names = ["NAME:Source real dataset names"]
+            source_imag_dataset_names = ["NAME:Source imag dataset names"]
+            sources = [source.name for source in self.excitations_by_type["Source"]]
+
+            for key, vals in harmonic_loss.items():
+                if key not in sources and key not in self.get_all_sources():
+                    self.logger.error("Not existing source " + key)
+                    return False
+
+                source_list.append(key)
+                if not isinstance(vals, (tuple, list)):
+                    self.logger.error("Real and Imag part of current must be provided")
+                    return False
+                else:
+                    source_real_dataset_names.append(vals[0])
+                    source_imag_dataset_names.append(vals[1])
+
+            settings_harmonic_loss = [
+                "NAME:HarmonicLoss",
+                "Value Type:=",
+                "A",
+                source_list,
+                source_real_dataset_names,
+                source_imag_dataset_names,
+            ]
+
+        if self.default_solution_type == "Q3D Extractor":
+            self.osolution.EditSources(settings_ac, settings_cg, settings_dc, settings_harmonic_loss)
+        else:
+            self.osolution.EditSources(settings_cg, settings_ac)
+        return True
+
+    @pyaedt_function_handler()
+    def export_matrix_data(
+        self,
+        file_name: str,
+        problem_type: str | None = None,
+        variations: str | None = None,
+        setup: str | None = None,
+        sweep: str | None = None,
+        reduce_matrix: str | None = None,
+        r_unit: str | None = "ohm",
+        l_unit: str | None = "nH",
+        c_unit: str | None = "pF",
+        g_unit: str | None = "mho",
+        freq: str | None = None,
+        freq_unit: str | None = None,
+        matrix_type: str | None = None,
+        export_ac_dc_res: bool | None = False,
+        precision: int | None = None,
+        field_width: int | None = None,
+        use_sci_notation: bool | None = True,
+        length_setting: str | None = "Distributed",
+        length: str | None = "1meter",
+    ) -> bool:
+        """Export matrix data.
+
+        Parameters
+        ----------
+        file_name : str
+            Full path to save the matrix data to.
+            Options for file extensions are: ``*.m``, ``*.lvl``, ``*.csv``,
+            and ``*.txt``.
+        problem_type : str, optional
+            Problem type. The default value is ``None``, in which case ``"C"`` is
+            used. Options are ``"C"``, ``"AC RL"``, and ``"DC RL"``.
+        variations : str, optional
+            Design variation. The default is ``None``, in which case the
+            current nominal variation is used.
+        setup : str, optional
+            Setup name. The default value is ``None``, in which case the first
+            analysis setup is used.
+        sweep : str, optional
+            Solution frequency. The default is ``None``, in which case
+            the default adaptive is used.
+        reduce_matrix : str, optional
+            Name of the matrix to display.
+            Default value is ``"Original"``.
+        r_unit : str, optional
+            Resistance unit value.
+            The default value is ``"ohm"``.
+        l_unit : str, optional
+            Inductance unit value.
+            The default value is ``"nH"``.
+        c_unit : str, optional
+            Capacitance unit value.
+            Default value is ``"pF"``.
+        g_unit : str, optional
+            Conductance unit value.
+            The default value is ``"mho"``.
+        freq : str, optional
+            Selected frequency.
+            The default value is ``"0Hz"``.
+        freq_unit : str, optional
+            Frequency unit. The default value is ``None``, in which case the
+            default unit is used.
+        matrix_type : str, optional
+            Matrix type. The default is ``None``.
+            Options are ``"Couple"``, ``"Maxwell"``, and ``"Spice"``.
+        export_ac_dc_res : bool, optional
+            Whether to add the AC and DC resistance.
+            The default is ``False``.
+        precision : int, optional
+            Precision format.
+            The default value is ``15``.
+        field_width : int, optional
+            Field Width.
+            The default value is ``20``.
+        use_sci_notation : bool, optional
+            Use sci notation.
+            Whether to use scientific notation.
+            The default value is ``True``.  When ``False``, the display format is used.
+        length_setting : str, optional
+            Length setting if the design si 2D.
+            The default value is ``"Distributed"``.
+        length : str, optional
+            Length.
+            The default value is ``"1meter"``.
+
+        Returns
+        -------
+        bool
+            ``True`` when successful, ``False`` when failed.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.q3d import QExtractor
+        >>> obj = QExtractor()
+        >>> obj.export_matrix_data(file_name="matrix_data.m")
+
+        """
+        if Path(file_name).suffix not in [".m", ".lvl", ".csv", ".txt"]:
+            self.logger.error("Extension is invalid. Possible extensions are *.m, *.lvl, *.csv, and *.txt.")
+            return False
+
+        if not self.modeler._is3d:
+            if problem_type is None:
+                problem_type = "CG"
+                if matrix_type is None:
+                    matrix_type = "Maxwell, Spice, Couple"
+                else:
+                    matrix_type_array = matrix_type.split(", ")
+                    if not [x for x in matrix_type_array if x in ["Maxwell", "Spice", "Couple"]]:
+                        self.logger.error("Invalid input matrix type. Possible values are Maxwell, Spice, and Couple.")
+                        return False
+            else:
+                problem_type_array = problem_type.split(", ")
+                if [x for x in problem_type_array if x in ["CG", "RL"]]:
+                    if "CG" in problem_type_array:
+                        if matrix_type is None:
+                            matrix_type = "Maxwell, Spice, Couple"
+                    else:
+                        if matrix_type is None:
+                            matrix_type = "Maxwell, Couple"
+                        else:
+                            matrix_type_array = matrix_type.split(", ")
+                            if [x for x in matrix_type_array if x == "Spice"]:
+                                self.logger.error("Spice can't be a matrix type if problem type is RL.")
+                                return False
+                else:
+                    self.logger.error("Invalid problem type. Possible values are CG and RL.")
+                    return False
+
+        else:
+            if problem_type is None:
+                problem_type = "C"
+                if matrix_type is None:
+                    matrix_type = "Maxwell, Spice, Couple"
+                else:
+                    matrix_type_array = matrix_type.split(", ")
+                    if not [x for x in matrix_type_array if x in ["Maxwell", "Spice", "Couple"]]:
+                        self.logger.error("Invalid input matrix type. Possible values are Maxwell, Spice, and Couple.")
+                        return False
+            else:
+                problem_type_array = problem_type.split(", ")
+                if [x for x in problem_type_array if x in ["C", "AC RL", "DC RL"]]:
+                    if "C" in problem_type_array:
+                        if matrix_type is None:
+                            matrix_type = "Maxwell, Spice, Couple"
+                    else:
+                        if matrix_type is None:
+                            matrix_type = "Maxwell, Couple"
+                        else:
+                            matrix_type_array = matrix_type.split(", ")
+                            if [x for x in matrix_type_array if x == "Spice"]:
+                                self.logger.error("Spice can't be a matrix type if problem type is AC RL or DC RL.")
+                                return False
+                else:
+                    self.logger.error("Invalid problem type. Possible values are C, AC RL, and DC RL.")
+                    return False
+
+        if variations is None:
+            nominal_values = self.available_variations.nominal_variation(dependent_params=False)
+            if not nominal_values:
+                variations = ""
+            else:
+                variations_list = []
+                for x in range(0, len(nominal_values)):
+                    variation = f"{list(nominal_values.keys())[x]}='{list(nominal_values.values())[x]}'"
+                    variations_list.append(variation)
+                variations = ",".join(variations_list)
+
+        if setup is None:
+            setup = self.active_setup
+        elif setup != self.active_setup:
+            self.logger.error("Setup named: %s is invalid. Provide a valid analysis setup name.", setup)
+            return False
+        if sweep is None:
+            sweep = self.design_solutions.default_adaptive
+        else:
+            sweep_array = [x.split(": ")[1] for x in self.existing_analysis_sweeps]
+            if sweep.replace(" ", "") not in sweep_array:
+                self.logger.error("Sweep is invalid. Provide a valid sweep.")
+                return False
+        analysis_setup = setup + " : " + sweep.replace(" ", "")
+
+        if reduce_matrix is None:
+            reduce_matrix = "Original"
+        else:
+            if self.matrices:
+                if not [matrix for matrix in self.matrices if matrix.name == reduce_matrix]:
+                    self.logger.error("Matrix doesn't exist. Provide an existing matrix.")
+                    return False
+            else:  # pragma: no cover
+                self.logger.error("List of matrix parameters is empty. Cannot export a valid matrix.")
+                return False
+
+        if r_unit is None:
+            r_unit = "ohm"
+        else:
+            if not r_unit.endswith("ohm"):
+                self.logger.error("Provide a valid unit for resistor.")
+                return False
+
+        if not l_unit.endswith("H"):
+            self.logger.error("Provide a valid unit for inductor.")
+            return False
+
+        if c_unit not in ["fF", "pF", "nF", "uF", "mF", "farad"]:
+            self.logger.error("Provide a valid unit for capacitance.")
+            return False
+
+        if g_unit is None:
+            g_unit = "mho"
+        else:
+            if g_unit not in [
+                "fSie",
+                "pSie",
+                "nSie",
+                "uSie",
+                "mSie",
+                "Sie",
+                "kSie",
+                "megSie",
+                "mho",
+                "perohm",
+                "apV",
+            ]:
+                self.logger.error("Provide a valid unit for conductance.")
+                return False
+
+        if freq is None:
+            freq = (
+                re.compile(r"(\d+)\s*(\w+)")
+                .match(self.get_oo_property_value(self.get_oo_object(self.odesign, "Analysis"), setup, "Adaptive Freq"))
+                .groups()[0]
+            )
+        else:
+            if freq_unit != self.units.frequency and freq_unit is not None:
+                freq = go.parse_dim_arg(f"{freq}{freq_unit}", self.units.frequency)
+
+        if export_ac_dc_res is None:
+            export_ac_dc_res = False
+
+        if precision is None:
+            precision = 15
+        else:
+            if not isinstance(precision, int):
+                self.logger.error("Precision type must be integer.")
+                return False
+
+        if field_width is None:
+            field_width = 20
+        else:
+            if not isinstance(field_width, int):
+                self.logger.error("Field width type must be integer.")
+                return False
+
+        if use_sci_notation is None:
+            use_sci_notation = 1
+        else:
+            if use_sci_notation:
+                use_sci_notation = 1
+            else:
+                use_sci_notation = 0
+
+        if not self.modeler._is3d:
+            if length_setting not in ["Distributed", "Lumped"]:
+                self.logger.error("Length setting is invalid.")
+                return False
+            if length is None:
+                length = "1meter"
+            else:
+                if re.compile(r"(\d+)\s*(\w+)").match(length).groups()[1] not in [
+                    "fm",
+                    "pm",
+                    "nm",
+                    "um",
+                    "mm",
+                    "cm",
+                    "dm",
+                    "meter",
+                    "km",
+                    "copper_oz",
+                    "ft",
+                    "in",
+                    "mil",
+                    "mile",
+                    "mileNaut",
+                    "mileTerr",
+                    "uin",
+                    "yd",
+                ]:
+                    self.logger.error("Unit length is invalid.")
+                    return False
+            try:
+                self.odesign.ExportMatrixData(
+                    str(file_name),
+                    problem_type,
+                    variations,
+                    analysis_setup,
+                    reduce_matrix,
+                    r_unit,
+                    l_unit,
+                    c_unit,
+                    g_unit,
+                    freq,
+                    length_setting,
+                    length,
+                    matrix_type,
+                    0,
+                    precision,
+                    field_width,
+                    use_sci_notation,
+                )
+                return True
+            except Exception:  # pragma: no cover
+                self.logger.error("Export of matrix data was unsuccessful.")
+                return False
+        else:
+            try:
+                self.odesign.ExportMatrixData(
+                    str(file_name),
+                    problem_type,
+                    variations,
+                    analysis_setup,
+                    reduce_matrix,
+                    r_unit,
+                    l_unit,
+                    c_unit,
+                    g_unit,
+                    freq,
+                    matrix_type,
+                    0,
+                    export_ac_dc_res,
+                    precision,
+                    field_width,
+                    use_sci_notation,
+                )
+                return True
+            except Exception:  # pragma: no cover
+                self.logger.error("Export of matrix data was unsuccessful.")
+                return False
+
+    @pyaedt_function_handler()
+    def export_equivalent_circuit(
+        self,
+        output_file: str = None,
+        setup: str | None = None,
+        sweep: str | None = None,
+        variations: list | str | None = None,
+        matrix: str | None = None,
+        cells: int | None = 2,
+        user_changed_settings: bool | None = True,
+        include_cap: bool | None = True,
+        include_cond: bool | None = True,
+        include_dcr: bool | None = False,
+        include_dcl: bool | None = False,
+        include_acr: bool | None = False,
+        include_acl: bool | None = False,
+        include_r: bool | None = True,
+        include_l: bool | None = True,
+        add_resistance: bool | None = False,
+        parse_pin_names: bool | None = False,
+        export_distributed: bool | None = True,
+        lumped_length: str | None = "1meter",
+        rise_time_value: str | None = None,
+        rise_time_unit: str | None = None,
+        coupling_limit_type: int | None = None,
+        cap_limit: str | None = None,
+        ind_limit: str | None = None,
+        res_limit: str | None = None,
+        cond_limit: str | None = None,
+        model: str | None = None,
+        frequency: int | str | None = 0,
+        file_type: str | None = "HSPICE",
+        include_cpp: bool | None = False,
+    ) -> bool:
+        """Export matrix data.
+
+        Parameters
+        ----------
+        output_file : str
+            Full path for saving the matrix data to.
+            Options for file extensions are CIR, SML, SP, PKG, SPC, LIB, CKT, BSP,
+            DML, and ICM.
+        setup : str, optional
+            Setup name.
+            The default value is ``None``, in which case the first analysis setup is used.
+        sweep : str, optional
+            Solution frequency. The default is ``None``, in which case
+            the default adaptive is used.
+        variations : list or str, optional
+            Design variation. The default is ``None``, in which case the
+            current nominal variation is used. If you provide a
+            design variation, use the format ``{Name}:{Value}``.
+        matrix : str, optional
+            Name of the matrix to show. The default is ``"Original"``.
+        cells : int, optional
+            Number of cells in export.
+            Default value is 2.
+        user_changed_settings : bool, optional
+            Whether user has changed settings or not, defaulted to True.
+            Default value is False.
+        include_cap : bool, optional
+            Include Capacitance.
+            Default value is True.
+        include_cond : bool, optional
+            Include Conductance.
+            Default value is True.
+        coupling_limit_type : int, optional
+            Coupling limit types.
+            Values can be: ``"By Value" -> 0`` or ``"By Fraction Of Self Term" -> 1``.
+            If None, no coupling limits are set.
+            Default value is None.
+        include_dcr : bool, optional
+            Flag indicates whether to export DC resistance matrix.
+            Default value is ``False``.
+        include_dcl : bool, optional
+            Flag indicates whether to export DC Inductance matrix.
+            Default value is ``False``.
+        include_acr : bool, optional
+            Flag indicates whether to export AC resistance matrix.
+            Default value is ``False``.
+        include_acl : bool, optional
+            Flag indicates whether to export AC inductance matrix.
+            Default value is ``False``.
+        include_r : bool, optional
+            Flag indicates whether to export resistance.
+            Default value is True.
+        include_l : bool, optional
+            Flag indicates whether to export inductance.
+            Default value is True.
+        add_resistance : bool, optional
+            Adds the DC and AC resistance.
+            Default value is True.
+        parse_pin_names : bool, optional
+            Parse pin names.
+            Default value is False.
+        export_distributed : bool, optional
+            Flag to tell whether to export in distributed mode or Lumped mode.
+            Default value is True.
+        lumped_length : str, optional
+            Length of the design.
+            Default value is 1 meter.
+        rise_time_value : str, optional
+            Rise time to calculate the number of cells.
+            Default value is 1e-09.
+        rise_time_unit : str, optional
+            Rise time unit.
+            Default is s.
+        cap_limit : str, optional
+            Capacitance limit.
+            Default value is 1pF if coupling_limit_type is 0.
+            Default value is 0.01 if coupling_limit_type is 1.
+        cond_limit : str, optional
+            Conductance limit.
+            Default value is 1mSie if coupling_limit_type is 0.
+            Default value is 0.01 if coupling_limit_type is 1.
+        res_limit : str, optional
+            Resistance limit.
+            Default value is 1ohm if coupling_limit_type is 0.
+            Default value is 0.01 if coupling_limit_type is 1.
+        ind_limit : str, optional
+            Inductance limit.
+            Default value is 1nH if coupling_limit_type is 0.
+            Default value is 0.01 if coupling_limit_type is 1.
+        model : str, optional
+            Model name or name of the sub circuit (Optional).
+            If None then file_name is considered as model name.
+        frequency : str, optional
+            Sweep frequency in Hz.
+            Default value is 0.
+        file_type : str, optional
+            The type of file format.
+            Type of HSPICE file format. (All HSPICE file formats have the same extension,
+            which is ``*.sp``.) Options are:
+            "Hspice": simple HSPICE file format.
+            "Welement": Nexxim/HSPICE W Element file format
+            "RLGC": Nexxim/HSPICE RLGC W Element file format
+            Default value is Hspice.
+        include_cpp : bool, optional
+            Whether to include chip package control.
+            Default value is False.
+
+        Returns
+        -------
+        bool
+            ``True`` when successful, ``False`` when failed.
+
+        References
+        ----------
+        >>> oModule.ExportCircuit
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Q3d
+        >>> aedtapp = Q3d()
+        >>> box = aedtapp.modeler.create_box([30, 30, 30], [10, 10, 10], name="mybox")
+        >>> net = aedtapp.assign_net(box, "my_net")
+        >>> source = aedtapp.assign_source_to_objectface(
+        ...     box.bottom_face_z.id, axisdir=0, source_name="Source1", net_name=net.name
+        ... )
+        >>> sink = aedtapp.sink(box.top_face_z.id, direction=0, name="Sink1", net_name=net.name)
+        >>> aedtapp["d"] = "20mm"
+        >>> aedtapp.modeler.duplicate_along_line(objid="Box1", vector=[0, "d", 0])
+        >>> mysetup = aedtapp.create_setup()
+        >>> aedtapp.analyze_setup(mysetup.name)
+        >>> aedtapp.export_equivalent_circuit(
+        ...     output_file="test_export_circuit.cir", setup=mysetup.name, sweep="LastAdaptive", variations=["d: 20mm"]
+        ... )
+
+        """
+        available_formats = [
+            ".sml",
+            ".sp",
+            ".pkg",
+            ".spc",
+            ".lib",
+            ".ckt",
+            ".bsp",
+            ".dml",
+            ".icm",
+        ]
+        # Previous to 2025R2, the method was creating an empty file for non-compatible formats. From
+        # 2025R2, the method is raising an exception if the format is not available.
+        if self.modeler._is3d:
+            available_formats.append(".cir")
+
+        if Path(output_file).suffix not in available_formats:
+            raise AEDTRuntimeError(f"Extension is invalid. Possible extensions are: {available_formats}.")
+
+        if setup is None:
+            setup = self.active_setup
+        elif setup != self.active_setup:
+            raise AEDTRuntimeError(f"Setup named: {setup} is invalid. Provide a valid analysis setup name.")
+
+        if sweep is None:
+            sweep = self.design_solutions.default_adaptive
+        else:
+            sweep_array = [x.split(": ")[1] for x in self.existing_analysis_sweeps]
+            if sweep.replace(" ", "") not in sweep_array:
+                raise AEDTRuntimeError("Sweep is invalid. Provide a valid sweep.")
+        analysis_setup = setup + " : " + sweep.replace(" ", "")
+
+        if variations is None:
+            nominal_values = self.available_variations.nominal_variation(dependent_params=False)
+
+            if not nominal_values:
+                variations = ""
+            else:
+                variations_list = []
+                for x in range(0, len(nominal_values)):
+                    variation = f"{list(nominal_values.keys())[x]}='{list(nominal_values.values())[x]}'"
+                    variations_list.append(variation)
+                variations = ",".join(variations_list)
+        else:
+            variations_list = []
+            if not isinstance(variations, list):
+                raise AEDTRuntimeError("Variations must be provided as a list.")
+            for x in range(0, len(variations)):
+                name = variations[x].replace(" ", "").split(":")[0]
+                value = variations[x].replace(" ", "").split(":")[1]
+                solved_variations = self.post.get_solution_data(variations={name: [value]})
+
+                if not solved_variations or not solved_variations.variations[0]:
+                    raise AEDTRuntimeError("Provided variation doesn't exist.")
+                variation = f"{name}='{value}'"
+                variations_list.append(variation)
+            variations = ",".join(variations_list)
+
+        if matrix is None:
+            matrix = "Original"
+        else:
+            if self.matrices:
+                if not [matrix_object for matrix_object in self.matrices if matrix_object.name == matrix]:
+                    raise AEDTRuntimeError("Matrix doesn't exist. Provide an existing matrix.")
+            else:
+                raise AEDTRuntimeError("List of matrix parameters is empty. Cannot export a valid matrix.")
+
+        coupling_limits = ["NAME:CouplingLimits", "CouplingLimitType:="]
+        coupling_limit_value = "None"
+        if coupling_limit_type:
+            if coupling_limit_type not in [0, 1]:
+                raise AEDTRuntimeError('Possible values are 0 = "By Value" or 1 = "By Fraction Of Self Term".')
+            elif coupling_limit_type == 0:
+                coupling_limit_value = "By Value"
+            elif coupling_limit_type == 1:
+                coupling_limit_value = "By Fraction Of Self Term"
+
+            coupling_limits.append(coupling_limit_value)
+
+            if cond_limit is None and coupling_limit_type == 0:
+                cond_limit = "1mSie"
+            elif cond_limit is None and coupling_limit_type == 1:
+                cond_limit = "0.01"
+            elif cond_limit is not None:
+                if decompose_variable_value(cond_limit)[1] not in [
+                    "fSie",
+                    "pSie",
+                    "nSie",
+                    "uSie",
+                    "mSie",
+                    "sie",
+                    "kSie",
+                    "megSie",
+                    "mho",
+                    "perohm",
+                ]:
+                    raise AEDTRuntimeError("Invalid conductance unit.")
+
+            coupling_limits.append("CondLimit:=")
+            coupling_limits.append(cond_limit)
+
+            if cap_limit is None and coupling_limit_type == 0:
+                cap_limit = "1pF"
+            elif cap_limit is None and coupling_limit_type == 1:
+                cap_limit = "0.01"
+            elif cap_limit is not None:
+                if decompose_variable_value(cap_limit)[1] not in ["fF", "pF", "nF", "uF", "mF", "farad"]:
+                    raise AEDTRuntimeError("Invalid conductance unit.")
+
+            coupling_limits.append("CapLimit:=")
+            coupling_limits.append(cap_limit)
+
+            if ind_limit is None and coupling_limit_type == 0:
+                ind_limit = "1nH"
+            elif ind_limit is None and coupling_limit_type == 1:
+                ind_limit = "0.01"
+            elif ind_limit is not None:
+                if decompose_variable_value(ind_limit)[1] not in ["fH", "pH", "nH", "uH", "mH", "H"]:
+                    raise AEDTRuntimeError("Invalid inductance unit.")
+
+            coupling_limits.append("IndLimit:=")
+            coupling_limits.append(ind_limit)
+
+            if res_limit is None and coupling_limit_type == 0:
+                res_limit = "1ohm"
+            elif res_limit is None and coupling_limit_type == 1:
+                res_limit = "0.01"
+            elif res_limit is not None:
+                if decompose_variable_value(res_limit)[1] not in ["uOhm", "mOhm", "ohm", "kOhm", "megOhm", "GOhm"]:
+                    raise AEDTRuntimeError("Invalid resistance unit.")
+
+            coupling_limits.append("ResLimit:=")
+            coupling_limits.append(res_limit)
+        else:
+            coupling_limits.append(coupling_limit_value)
+
+        if model is None:
+            model = self.project_name
+
+        if decompose_variable_value(lumped_length)[1] not in [
+            "cm",
+            "dm",
+            "fm",
+            "ft",
+            "in",
+            "km",
+            "light year",
+            "meter",
+            "mil",
+            "mile",
+            "mileNaut",
+            "mileTerr",
+            "mm",
+            "nm",
+            "pm",
+            "uin",
+            "um",
+            "yd",
+        ]:
+            raise AEDTRuntimeError("Invalid lumped length unit.")
+
+        if rise_time_value is None:
+            rise_time_value = "1e-9"
+
+        if rise_time_unit:
+            if rise_time_unit not in ["fs", "ps", "ns", "us", "ms", "s", "min", "hour", "day"]:
+                raise AEDTRuntimeError("Invalid rise time unit.")
+        else:
+            rise_time_unit = "s"
+
+        rise_time = rise_time_value + rise_time_unit
+
+        if file_type.lower() not in ["hspice", "welement", "rlgc"]:
+            raise AEDTRuntimeError("Invalid file type, possible solutions are Hspice, Welement, RLGC.")
+
+        cpp_settings = []
+        if include_cpp:
+            if settings.aedt_version >= "2023.2":
+                if not [x for x in [include_dcr, include_dcl, include_acr, include_acl, add_resistance] if x]:
+                    raise AEDTRuntimeError(
+                        "Select DC/AC resistance/inductance to include the chip package control data in export circuit."
+                    )
+                else:
+                    circuit_settings = self.oanalysis.GetCircuitSettings()
+                    for setting in circuit_settings:
+                        if isinstance(setting, tuple) or isinstance(setting, list):
+                            if setting[0] == "NAME:CPPInfo":
+                                cpp_settings = setting
+                                break
+        if self.modeler._is3d:
+            try:
+                export_circuit_context = [
+                    "NAME:CircuitData",
+                    "MatrixName:=",
+                    matrix,
+                    "NumberOfCells:=",
+                    str(cells),
+                    "UserHasChangedSettings:=",
+                    user_changed_settings,
+                    "IncludeCap:=",
+                    include_cap,
+                    "IncludeCond:=",
+                    include_cond,
+                    coupling_limits,
+                    "IncludeDCR:=",
+                    include_dcr,
+                    "IncudeDCL:=",
+                    include_dcl,
+                    "IncludeACR:=",
+                    include_acr,
+                    "IncludeACL:=",
+                    include_acl,
+                    "ADDResistance:=",
+                    add_resistance,
+                    "ParsePinNames:=",
+                    parse_pin_names,
+                ]
+
+                if include_cpp:
+                    export_circuit_context.append("IncludeCPP:=")
+                    export_circuit_context.append(include_cpp)
+                    export_circuit_context.append(cpp_settings)
+
+                self.oanalysis.ExportCircuit(
+                    analysis_setup,
+                    variations,
+                    str(output_file),
+                    export_circuit_context,
+                    model,
+                    frequency,
+                )
+                return True
+            except Exception:
+                raise AEDTRuntimeError("Export of equivalent circuit was unsuccessful.")
+        else:
+            try:
+                self.oanalysis.ExportCircuit(
+                    analysis_setup,
+                    variations,
+                    str(output_file),
+                    [
+                        "NAME:CircuitData",
+                        "MatrixName:=",
+                        matrix,
+                        "NumberOfCells:=",
+                        str(cells),
+                        "UserHasChangedSettings:=",
+                        user_changed_settings,
+                        "IncludeCap:=",
+                        include_cap,
+                        "IncludeCond:=",
+                        include_cond,
+                        [coupling_limits],
+                        "IncludeR:=",
+                        include_r,
+                        "IncludeL:=",
+                        include_l,
+                        "ExportDistributed:=",
+                        export_distributed,
+                        "LumpedLength:=",
+                        lumped_length,
+                        "RiseTime:=",
+                        rise_time,
+                    ],
+                    model,
+                    file_type,
+                    frequency,
+                )
+                return True
+            except Exception:
+                raise AEDTRuntimeError("Export of equivalent circuit was unsuccessful.")
+
+
+class Q3d(QExtractor, CreateBoundaryMixin, PyAedtBase):
+    """Provides the Q3D app interface.
+
+    This class allows you to create an instance of Q3D and link to an
+    existing project or create a new one.
+
+    Parameters
+    ----------
+    project : str, optional
+        Name of the project to select or the full path to the project
+        or AEDTZ archive to open. The default is ``None``, in which
+        case an attempt is made to get an active project. If no
+        projects are present, an empty project is created.
+    design : str, optional
+        Name of the design to select. The default is ``None``, in
+        which case an attempt is made to get an active design. If no
+        designs are present, an empty design is created.
+    solution_type : str, optional
+        Solution type to apply to the design. The default is
+        ``None``, in which case the default type is applied.
+    setup : str, optional
+        Name of the setup to use as the nominal. The default is
+        ``None``, in which case the active setup is used or nothing
+        is used.
+    version : str, int, float, optional
+        Version of AEDT to use. The default is ``None``, in which case
+        the active version or latest installed version is used.
+        This parameter is ignored when a script is launched within AEDT.
+        Examples of input values are ``261``, ``26.1``, ``2026.1``, ``"2026.1"``.
+    non_graphical : bool, optional
+        Whether to launch AEDT in non-graphical mode. The default
+        is ``False``, in which case AEDT is launched in graphical mode.
+        This parameter is ignored when a script is launched within AEDT.
+    new_desktop : bool, optional
+        Whether to launch an instance of AEDT in a new thread, even if
+        another instance of the ``version`` is active on the
+        machine. The default is ``False``. This parameter is ignored when
+        a script is launched within AEDT.
+    close_on_exit : bool, optional
+        Whether to release AEDT on exit. The default is ``False``.
+    student_version : bool, optional
+        Whether to open the AEDT student version. The default is ``False``.
+        This parameter is ignored when a script is launched within AEDT.
+    machine : str, optional
+        Machine name to connect the oDesktop session to. This works only in
+        2022 R2 and later. The remote server must be up and running with the
+        command `"ansysedt.exe -grpcsrv portnum"`. If the machine is `"localhost"`,
+        the server also starts if not present.
+    port : int, optional
+        Port number on which to start the oDesktop communication on an already
+        existing server. This parameter is ignored when a new server is created.
+        It works only in 2022 R2 and later. The remote server must be up and
+        running with the command `"ansysedt.exe -grpcsrv portnum"`.
+    aedt_process_id : int, optional
+        Process ID for the instance of AEDT to point PyAEDT at. The default is
+        ``None``. This parameter is only used when ``new_desktop = False``.
+    remove_lock : bool, optional
+        Whether to remove lock to project before opening it or not.
+        The default is ``False``, which means to not unlock
+        the existing project if needed and raise an exception.
+
+    Examples
+    --------
+    Create an instance of Q3D and connect to an existing Q3D
+    design or create a new Q3D design if one does not exist.
+
+    >>> from ansys.aedt.core import Q3d
+    >>> app = Q3d()
+    PyAEDT INFO: No project is defined...
+    PyAEDT INFO: Active design is set to...
+
+    Create an instance of Q3D and link to a project named
+    ``Q3dProject``. If this project does not exist, create one with
+    this name.
+
+    >>> app = Q3d("Q3dProject")
+    PyAEDT INFO: Project Q3dProject has been created.
+    PyAEDT INFO: No design is present. Inserting a new design.
+    PyAEDT INFO: Added design ...
+
+    Create an instance of Q3D and link to a design named
+    ``Q3dDesign1`` in a project named ``Q3dProject``.
+
+    >>> app = Q3d("Q3dProject", "Q3dDesign1")
+    PyAEDT INFO: Added design 'Q3dDesign1' of type Q3D Extractor.
+
+    Create an instance of Q3D and open the specified project,
+    which is named ``"myfile.aedt"``.
+
+    >>> app = Q3d("myfile.aedt")
+    PyAEDT INFO: Project myfile has been created.
+    PyAEDT INFO: No design is present. Inserting a new design.
+    PyAEDT INFO: Added design...
+
+    Create an instance of Q3D using the 2026 R1 release and open
+    the specified project, which is named ``"myfile2.aedt"``.
+
+    >>> app = Q3d(version=261, project="myfile2.aedt")
+    PyAEDT INFO: Project myfile2 has been created.
+    PyAEDT INFO: No design is present. Inserting a new design.
+    PyAEDT INFO: Added design...
+
+    Create an instance of Q3D using the 2026 R1 student version and open
+    the specified project, which is named ``"myfile3.aedt"``.
+
+    >>> app = Q3d(version="261", project="myfile3.aedt", student_version=True)
+    PyAEDT INFO: Project myfile3 has been created.
+    PyAEDT INFO: No design is present. Inserting a new design.
+    PyAEDT INFO: Added design...
+
+    """
+
+    def __init__(
+        self,
+        project: str | None = None,
+        design: str | None = None,
+        solution_type: str | None = None,
+        setup: str | None = None,
+        version: str | None = None,
+        non_graphical: bool | None = False,
+        new_desktop: bool | None = False,
+        close_on_exit: bool | None = False,
+        student_version: bool | None = False,
+        machine: str | None = "",
+        port: int | None = 0,
+        aedt_process_id: int | None = None,
+        remove_lock: bool | None = False,
+    ) -> None:
+        self.is3d = True
+        QExtractor.__init__(
+            self,
+            "Q3D",
+            project,
+            design,
+            solution_type,
+            setup,
+            version,
+            non_graphical,
+            new_desktop,
+            close_on_exit,
+            student_version,
+            machine,
+            port,
+            aedt_process_id,
+            remove_lock=remove_lock,
+        )
+
+    def _init_from_design(self, *args, **kwargs) -> None:
+        self.__init__(*args, **kwargs)
+
+    @pyaedt_function_handler()
+    # NOTE: Extend Mixin behaviour to handle em field setups
+    def _create_boundary(self, name: str, props, boundary_type):
+        # Non em field cases
+        if boundary_type not in (
+            "NearFieldSphere",
+            "NearFieldBox",
+            "NearFieldRectangle",
+            "NearFieldLine",
+        ):
+            return super()._create_boundary(name, props, boundary_type)
+
+        # Near field setup
+        bound = NearFieldSetup(self, name, props, boundary_type)
+        result = bound.create()
+        if result:
+            self.field_setups.append(bound)
+            self.logger.info(f"Field setup {boundary_type} {name} has been created.")
+            return bound
+        raise AEDTRuntimeError(f"Failed to create near field setup {boundary_type} {name}")
+
+    @property
+    def net_names(self) -> list[str]:
+        """Nets in a Q3D project.
+
+        Returns
+        -------
+        List of nets in a Q3D project.
+
+        References
+        ----------
+        >>> oModule.ListNets
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.q3d import Q3d
+        >>> obj = Q3d()
+        >>> obj.net_names
+
+        """
+        try:
+            net_names = self.get_oo_name(self.odesign, "Nets")
+        except Exception:  # pragma: no cover
+            nets_data = list(self.oboundary.ListNets())
+            net_names = []
+            for i in nets_data:
+                if isinstance(i, (list, tuple)):
+                    net_names.append(i[0].split(":")[1])
+        return net_names
+
+    @property
+    def design_nets(self) -> dict[str, BoundaryObject]:
+        """Get all nets.
+
+        Returns
+        -------
+        dict[str, :class:`ansys.aedt.core.modules.boundary.common.BoundaryObject`]
+           Nets.
+
+        References
+        ----------
+        >>> oModule.GetExcitations
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.q3d import Q3d
+        >>> obj = Q3d()
+        >>> obj.design_nets
+
+        """
+        net_objects = {}
+        for el in self.boundaries:
+            if el.name in self.net_names:
+                net_objects[el.name] = el
+        return net_objects
+
+    @property
+    def nets_by_type(self) -> dict:
+        """Design nets by type.
+
+        Returns
+        -------
+        dict
+            Dictionary of nets.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.q3d import Q3d
+        >>> obj = Q3d()
+        >>> obj.nets_by_type
+
+        """
+        _dict_out = {}
+        for bound in self.design_nets.values():
+            bound_type = bound.type
+            if bound_type in _dict_out:
+                _dict_out[bound_type].append(bound)
+            else:
+                _dict_out[bound_type] = [bound]
+        return _dict_out
+
+    @property
+    @min_aedt_version("2025.1")
+    def field_setups(self) -> list[NearFieldSetup]:
+        """List of EM fields.
+
+        Returns
+        -------
+        List of :class:`ansys.aedt.core.modules.hfss_boundary.NearFieldSetup`
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Q3d
+        >>> q3d = Q3d()
+        >>> setup = q3d.create_setup()
+        >>> q3d.insert_em_field_box()
+        >>> setups = q3d.field_setups
+        Edit u size for the first field setup.
+        >>> q3d.field_setups[0].properties["U Size"] = "21mm"
+
+        """
+        field_setups = []
+        em_fields_oo = self.get_oo_object(self.odesign, "EM Fields")
+        for field in self.field_setup_names:
+            type_field = self.get_oo_property_value(em_fields_oo, field, "Type")
+            field_setups.append(NearFieldSetup(self, field, {}, f"NearField{type_field}"))
+
+        return field_setups
+
+    @property
+    @min_aedt_version("2025.1")
+    def field_setup_names(self) -> list[str]:
+        """List of EM field names.
+
+        Returns
+        -------
+        List of str
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Q3d
+        >>> q3d = Q3d()
+        >>> setup = q3d.create_setup()
+        >>> q3d.insert_em_field_box()
+        >>> setup_names = q3d.field_setup_names
+
+        """
+        return self.get_oo_name(self.odesign, "EM Fields")
+
+    @pyaedt_function_handler()
+    def delete_all_nets(self) -> bool:
+        """Delete all nets in the design.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.q3d import Q3d
+        >>> obj = Q3d()
+        >>> obj.delete_all_nets()
+
+        """
+        net_names = self.net_names[::]
+        for i in self.boundaries[::]:
+            if i.name in net_names:
+                i.delete()
+        return True
+
+    @pyaedt_function_handler()
+    def objects_from_nets(self, assignment: str | list[str], materials: str | list | None = None) -> dict:
+        """Find the objects that belong to one or more nets. You can filter by materials.
+
+        Parameters
+        ----------
+        assignment : str, list
+            One or more nets to search for. The search is case-insensitive.
+        materials : str, list, optional
+            One or more materials for filtering the net objects. The default
+            is ``None``. The search is case insensitive.
+
+        Returns
+        -------
+        dict
+            Dictionary of net name and objects that belongs to it.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.q3d import Q3d
+        >>> obj = Q3d()
+        >>> obj.objects_from_nets(assignment="Net1", materials="copper")
+
+        """
+        if isinstance(assignment, str):
+            assignment = [assignment]
+        if isinstance(materials, str):
+            materials = [materials]
+        elif not materials:
+            materials = []
+        materials = [i.lower() for i in materials]
+        objects = {}
+        for net in assignment:
+            for bound in self.boundaries:
+                if net.lower() == bound.name.lower() and "Net" in bound.type:
+                    obj_list = self.modeler.convert_to_selections(bound.props.get("Objects", []), True)
+                    if materials:
+                        obj_list = [
+                            self.modeler[i].name for i in obj_list if self.modeler[i].material_name.lower() in materials
+                        ]
+                    objects[net] = obj_list
+        return objects
+
+    @pyaedt_function_handler()
+    def net_sources(self, net_name: str) -> list:
+        """Check if a net has sources and return a list of source names.
+
+        Parameters
+        ----------
+        net_name : str
+            Name of the net to search for.
+
+        Returns
+        -------
+        List
+            List of source names.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Q3d
+        >>> q3d = Q3d("my_project")
+        >>> net = q3d.net_sources("Net1")
+
+        """
+        sources = []
+
+        # Try to find the matching net from SignalNet boundaries
+        net = next((i for i in self.boundaries_by_type.get("SignalNet", []) if i.name == net_name), None)
+
+        # Get net_id and net_sources_sinks if the net was found
+        net_id = net.props.get("ID") if net and net.props.get("ID") is not None else -1  # pragma: no cover
+        net_sources_sinks = net.children if net else {}
+
+        for boundary in self.boundaries:
+            if boundary.type == "Source" and (
+                boundary.props.get("Net") == net_name
+                or boundary.props.get("Net") == net_id
+                or boundary.name in net_sources_sinks
+            ):
+                sources.append(boundary.name)
+
+        return sources
+
+    @pyaedt_function_handler()
+    def net_sinks(self, net_name: str) -> list:
+        """Check if a net has sinks and return a list of sink names.
+
+        Parameters
+        ----------
+        net_name : str
+            Name of the net to search for.
+
+        Returns
+        -------
+        List
+            List of sink names.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Q3d
+        >>> q3d = Q3d("my_project")
+        >>> net = q3d.net_sinks("Net1")
+
+        """
+        sinks = []
+
+        # Try to find the matching net from SignalNet boundaries
+        net = next((i for i in self.boundaries_by_type.get("SignalNet", []) if i.name == net_name), None)
+
+        # Get net_id and net_sources_sinks if the net was found
+        net_id = net.props.get("ID") if net and net.props.get("ID") is not None else -1  # pragma: no cover
+        net_sources_sinks = net.children if net else {}
+
+        for boundary in self.boundaries:
+            if boundary.type == "Sink" and (
+                boundary.props.get("Net") == net_name
+                or boundary.props.get("Net") == net_id
+                or boundary.name in net_sources_sinks
+            ):
+                sinks.append(boundary.name)
+        return sinks
+
+    @pyaedt_function_handler()
+    def auto_identify_nets(self) -> bool:
+        """Identify nets automatically.
+
+        Returns
+        -------
+        bool
+            ``True`` when successful, ``False`` when failed.
+
+        References
+        ----------
+        >>> oModule.AutoIdentifyNets
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.q3d import Q3d
+        >>> obj = Q3d()
+        >>> obj.auto_identify_nets()
+
+        """
+        original_nets = [i for i in self.net_names]
+        has_conductor = False
+        for _, val in self.modeler.objects.items():
+            if val.material_name and self.materials[val.material_name].is_conductor():
+                has_conductor = True
+                break
+        if not has_conductor:
+            self.logger.warning("Nets not identified because no conductor material was found.")
+            return True
+        self.oboundary.AutoIdentifyNets()
+        new_nets = [i for i in self.net_names if i not in original_nets]
+        for net in new_nets:
+            objects = self.modeler.convert_to_selections(
+                [int(i) for i in list(self.oboundary.GetExcitationAssignment(net))], True
+            )
+            props = dict({"Objects": objects})
+            bound = BoundaryObject(self, net, props, "SignalNet")
+            self._boundaries[bound.name] = bound
+        if new_nets:
+            self.logger.info(f"{len(new_nets)} Nets have been identified: {', '.join(new_nets)}")
+        else:
+            self.logger.info("No new nets identified")
+        return True
+
+    @pyaedt_function_handler()
+    def toggle_net(self, net_name: str | BoundaryObject, net_type: str | None = "Signal") -> BoundaryObject:
+        """Toggle net type.
+
+        Parameters
+        ----------
+        net_name : str or :class:`ansys.aedt.core.modules.boundary.common.BoundaryObject`, optional
+            Name of the net. The default is ```None``, in which case the
+            default name is used.
+        net_type : str, optional
+            Type of net to create. Options are ``"Signal"``, ``"Ground"`` and ``"Floating"``.
+            The default is ``"Signal"``.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modules.boundary.common.BoundaryObject`s
+            Net object.
+
+        References
+        ----------
+        >>> oModule.ToggleNet
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Q3d
+        >>> q3d = Q3d()
+        >>> box = q3d.modeler.create_box([30, 30, 30], [10, 10, 10], name="mybox")
+        >>> aedtapp.auto_identify_nets()
+        >>> net = aedtapp.net_names[0]
+        >>> new_net = aedtapp.toggle_net(net, "Floating")
+
+        """
+        if isinstance(net_name, BoundaryObject):
+            net_name = net_name.name
+
+        if net_name not in self.net_names:
+            raise ValueError(f"{net_name} is not a valid net name.")
+
+        type_bound = {"ground": "GroundNet", "floating": "FloatingNet"}.get(net_type.lower(), "SignalNet")
+
+        # Delete from list of design excitations
+        if net_name in self._boundaries:
+            self._boundaries.pop(net_name)
+
+        # Toggle
+        self.oboundary.ToggleNet(net_name, type_bound)
+
+        # Update boundaries
+        _ = self.boundaries
+
+        return self._boundaries[net_name]
+
+    @pyaedt_function_handler()
+    def assign_net(
+        self, assignment: str | list[str], net_name: str | None = None, net_type: str | None = "Signal"
+    ) -> BoundaryObject:
+        """Assign a net to a list of objects.
+
+        Parameters
+        ----------
+        assignment : list, str
+            List of objects to assign the net to. It can be a single object.
+        net_name : str, optional
+            Name of the net. The default is ```None``, in which case the
+            default name is used.
+        net_type : str, optional
+            Type of net to create. Options are ``"Signal"``, ``"Ground"`` and ``"Floating"``.
+            The default is ``"Signal"``.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modules.boundary.common.BoundaryObject`
+            Source object.
+
+        References
+        ----------
+        >>> oModule.AssignSignalNet
+        >>> oModule.AssignGroundNet
+        >>> oModule.AssignFloatingNet
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Q3d
+        >>> q3d = Q3d()
+        >>> box = q3d.modeler.create_box([30, 30, 30], [10, 10, 10], name="mybox")
+        >>> net_name = "my_net"
+        >>> net = q3d.assign_net(box, net_name)
+
+        """
+        assignment = self.modeler.convert_to_selections(assignment, True)
+        if not net_name:
+            net_name = generate_unique_name("Net")
+        props = dict({"Objects": assignment})
+
+        type_bound = {"ground": "GroundNet", "floating": "FloatingNet"}.get(net_type.lower(), "SignalNet")
+
+        return self._create_boundary(net_name, props, type_bound)
+
+    @pyaedt_function_handler()
+    def source(
+        self,
+        assignment: "str | int | list | Object3d | None" = None,
+        direction: int | None = 0,
+        name: str | None = None,
+        net_name: str | None = None,
+        terminal_type: str | None = "voltage",
+    ) -> BoundaryObject:
+        """Generate a source on a face of an object or a group of faces or face ids.
+
+        The face ID is selected based on the axis direction. It is the face that
+        has the maximum/minimum in this axis direction.
+
+        Parameters
+        ----------
+        assignment : str, int or list or :class:`ansys.aedt.core.modeler.cad.object_3d.Object3d`
+            Name of the object or face ID or face ID list.
+        direction : int, optional
+            Initial axis direction. Options are ``0`` to ``5``. The default is ``0``.
+        name : str, optional
+            Name of the source. The default is ``None``.
+        net_name : str, optional
+            Name of the net. The default is ``None``, in which case the ``object_name`` is considered.
+        terminal_type : str, optional
+            Type of the terminal. Options are ``voltage`` and ``current``. The default is ``voltage``.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modules.boundary.common.BoundaryObject`
+            Source object.
+
+        References
+        ----------
+        >>> oModule.AssignSource
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.q3d import Q3d
+        >>> obj = Q3d()
+        >>> obj.source()
+
+        """
+        return self._assign_source_or_sink(assignment, direction, name, net_name, terminal_type, "Source")
+
+    @pyaedt_function_handler()
+    def sink(
+        self,
+        assignment: "str | int | list | Object3d | None" = None,
+        direction: int | None = 0,
+        name: str | None = None,
+        net_name: str | None = None,
+        terminal_type: str | None = "voltage",
+    ) -> BoundaryObject:
+        """Generate a sink on a face of an object or a group of faces or face ids.
+
+        The face ID is selected based on the axis direction. It is the face that
+        has the maximum/minimum in this axis direction.
+
+        Parameters
+        ----------
+        assignment : str, int or list or :class:`ansys.aedt.core.modeler.cad.object_3d.Object3d`
+            Name of the object or face ID or face ID list.
+        direction : int, optional
+            Initial axis direction. Options are ``0`` to ``5``. The default is ``0``.
+        name : str, optional
+            Name of the source. The default is ``None``.
+        net_name : str, optisonal
+            Name of the net. The default is ``None``, in which case the ``object_name`` is considered.
+        terminal_type : str, optional
+            Type of the terminal. Options are ``voltage`` and ``current``. The default is ``voltage``.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modules.boundary.common.BoundaryObject`
+            Sink object.
+
+        References
+        ----------
+        >>> oModule.AssignSource
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.q3d import Q3d
+        >>> obj = Q3d()
+        >>> obj.sink()
+
+        """
+        return self._assign_source_or_sink(assignment, direction, name, net_name, terminal_type, "Sink")
+
+    @pyaedt_function_handler()
+    def _assign_source_or_sink(self, assignment, direction, name, net_name, terminal_type, exc_type):
+        if not name:
+            name = generate_unique_name(exc_type)
+        assignment = self.modeler.convert_to_selections(assignment, True)
+        sheets = []
+        is_face = True
+        for object_name in assignment:
+            if isinstance(object_name, str) and object_name in self.modeler.solid_names:
+                sheets.append(self.modeler._get_faceid_on_axis(object_name, direction))
+                if not net_name:
+                    for net in self.net_names:
+                        if object_name in self.objects_from_nets(net):
+                            net_name = net
+            elif isinstance(object_name, str):
+                is_face = False
+                sheets.append(object_name)
+            else:
+                sheets.append(object_name)
+
+        if is_face:
+            props = dict({"Faces": sheets})
+        else:
+            props = dict({"Objects": sheets})
+
+        if terminal_type == "current":
+            terminal_str = "UniformCurrent"
+        else:
+            terminal_str = "ConstantVoltage"
+
+        props["TerminalType"] = terminal_str
+        if net_name:
+            props["Net"] = net_name
+        return self._create_boundary(name, props, exc_type)
+
+    @pyaedt_function_handler()
+    def set_material_thresholds(
+        self,
+        insulator_threshold: float | None = None,
+        perfect_conductor_threshold: float | None = None,
+        magnetic_threshold: float | None = None,
+    ) -> bool:
+        """Set material threshold.
+
+        Parameters
+        ----------
+        insulator_threshold : float, optional
+            Threshold for the insulator or conductor. The default is "None", in which
+            case the threshold is set to 10000.
+        perfect_conductor_threshold : float, optional
+            Threshold that decides whether a conductor is perfectly conducting. This value
+            must be higher than the value for the insulator threshold. The default is ``None``,
+            in which case the value is set to 1E+030.
+        magnetic_threshold : float, optional
+            Threshold that decides whether a material is magnetic. The default is "None",
+            in which case the value is set to 1.01.
+
+        Returns
+        -------
+        bool
+            ``True`` when successful, ``False`` when failed.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.q3d import Q3d
+        >>> obj = Q3d()
+        >>> obj.set_material_thresholds()
+
+        """
+        try:
+            import numpy as np
+
+            if not insulator_threshold:
+                insulator_threshold = 10000
+            if not perfect_conductor_threshold:
+                perfect_conductor_threshold = float("1E+30")
+            else:
+                if perfect_conductor_threshold < insulator_threshold:
+                    msg = "Perfect conductor threshold must be higher than insulator threshold."
+                    raise ValueError(msg)
+            if not magnetic_threshold:
+                magnetic_threshold = 1.01
+
+            if not self.desktop_class.is_grpc_api:
+                insulator_threshold = np.longdouble(insulator_threshold)
+                perfect_conductor_threshold = np.longdouble(perfect_conductor_threshold)
+                magnetic_threshold = np.longdouble(magnetic_threshold)
+
+            self.oboundary.SetMaterialThresholds(insulator_threshold, perfect_conductor_threshold, magnetic_threshold)
+            return True
+
+        except Exception:
+            return False
+
+    @pyaedt_function_handler()
+    def create_setup(self, name: str | None = "MySetupAuto", **kwargs) -> SetupQ3D:
+        """Create an analysis setup for Q3D Extractor.
+
+        Optional arguments are passed along with the ``name`` parameter.
+
+        Parameters
+        ----------
+        name : str, optional
+            Name of the setup. The default is "Setup1".
+        **kwargs : dict, optional
+            Available keys depend on the setup chosen.
+            For more information, see :doc:`../SetupTemplatesQ3D`.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modules.solve_setup.SetupQ3D`
+            3D Solver Setup object.
+
+        References
+        ----------
+        >>> oModule.InsertSetup
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Q3d
+        >>> app = Q3d()
+        >>> app.create_setup(name="Setup1", DC__MinPass=2)
+
+        """
+        setup_type = self.design_solutions.default_setup
+
+        if "props" in kwargs:
+            return self._create_setup(name=name, setup_type=setup_type, props=kwargs["props"])
+        else:
+            setup = self._create_setup(name=name, setup_type=setup_type)
+        setup.auto_update = False
+        for arg_name, arg_value in kwargs.items():
+            if setup[arg_name] is not None:
+                setup[arg_name] = arg_value
+        setup.auto_update = True
+        setup.update()
+        return setup
+
+    @pyaedt_function_handler()
+    def assign_thin_conductor(
+        self,
+        assignment: "str | int | list | Object3d | None" = None,
+        material: str | None = "copper",
+        thickness: float | str | int | None = 1,
+        name: str | None = "",
+    ) -> BoundaryObject:
+        """Assign a thin conductor to a sheet.
+
+        The method accepts both a sheet name or a face id.
+        If a face it is provided, then a sheet will be created and the boundary assigned to it.
+
+        Parameters
+        ----------
+        assignment : str or int or :class:`ansys.aedt.core.modeler.cad.object_3d.Object3d` or list
+            Object assignment.
+        material : str, optional
+            Material. Default is ``"copper"``.
+        thickness : float, str, optional
+            Conductor thickness. It can be as number of a string with units. Default is ``1``.
+        name : str, optional
+            Name of the boundary. Default is ``""``.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modules.boundary.common.BoundaryObject`
+            Source object.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.q3d import Q3d
+        >>> obj = Q3d()
+        >>> obj.assign_thin_conductor(assignment="my_sheet", material="copper", thickness=1, name="my_thin_conductor")
+
+        """
+        assignment = self.modeler.convert_to_selections(assignment, True)
+        new_ass = []
+        for ass in assignment:
+            if isinstance(ass, int):
+                try:
+                    new_ass.append(self.modeler.create_object_from_face(ass)._m_name)
+                except Exception:  # pragma: no cover
+                    self.logger.error("Thin conductor can be applied only to sheet objects or faces.")
+            elif ass in self.modeler.sheet_names:
+                new_ass.append(ass)
+            else:
+                self.logger.error("Thin conductor can be applied only to sheet objects.")
+        if not new_ass:
+            return False
+        if not name:
+            name = generate_unique_name("Thin_Cond")
+        if isinstance(thickness, (float, int)):
+            thickness = str(thickness) + self.modeler.model_units
+        props = dict({"Objects": new_ass, "Material": material, "Thickness": thickness})
+
+        return self._create_boundary(name, props, "ThinConductor")
+
+    @pyaedt_function_handler()
+    def get_mutual_coupling(
+        self,
+        source1: str = None,
+        sink1: str = None,
+        source2: str = None,
+        sink2: str = None,
+        calculation: str | None = "ACL",
+        setup_sweep_name: str | None = None,
+        variations: dict | None = None,
+    ) -> SolutionData | bool:
+        """Get mutual coupling between two terminals.
+
+        User has to provide the pair, source and sink of each terminal. If the provided sinks are not part of the
+        original matrix, a new matrix will be created.
+
+        Parameters
+        ----------
+        source1 : str
+            First element source.
+        sink1 : str
+            First element sink.
+        source2 : str
+            Second element source.
+        sink2 : str
+            Second element sink.
+        calculation : str, optional
+            Calculation type.
+            Available options are: ``"ACL"``, ``"ACR"``, ``"DCL"``, ``"DCR"``.
+            The default is ``"ACL"``.
+        setup_sweep_name : str, optional
+            Name of the setup. The default is ``None``, in which case the ``nominal_adaptive``
+            setup is used. Be sure to build a setup string in the form of
+            ``"SetupName : SetupSweep"``, where ``SetupSweep`` is the sweep name to
+            use in the export or ``LastAdaptive``.
+        variations : dict, optional
+            Dictionary of all families including the primary sweep.
+            The default is ``None`` which uses all variations of the setup.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modules.solutions.SolutionData` or bool
+            Solution Data object if successful, ``False`` otherwise.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Q3d
+        >>> aedtapp = Q3d()
+        >>> data = aedtapp.modeler.get_mutual_coupling("a1", "a2", "b1", "b2", calculation="DCL")
+
+        """
+        if setup_sweep_name is None:
+            setup_sweep_name = self.nominal_sweep
+
+        if calculation not in ["ACL", "ACR", "DCL", "DCR"]:
+            self.logger.error("Calculation type not valid.")
+            return False
+
+        if not variations:
+            variations = self.available_variations.all
+
+        assignment = {}
+
+        for net in self.net_names:
+            source_name = "source_1"
+            sources = self.net_sources(net)
+            sinks = self.net_sinks(net)
+            assignment[net] = {}
+
+            if source1 in sources or source1 in sinks:
+                assignment[net][source_name] = source1
+                source_name = "source_2"
+            if sink1 in sources or sink1 in sinks:
+                assignment[net]["sink"] = sink1
+            if source2 in sources or source2 in sinks:
+                assignment[net][source_name] = source2
+            if sink2 in sources or sink2 in sinks:
+                assignment[net]["sink"] = sink2
+
+        move_sink = []
+        is_new_matrix = True
+        matrix_name = "Original"
+
+        sources = []
+        sinks = []
+
+        expression = calculation + "("
+
+        for net_name, net_props in assignment.items():
+            expression += net_name
+
+            if "source_1" not in net_props or "sink" not in net_props:
+                self.logger.error("Sources and sinks passed not valid.")
+                return False
+
+            sources.append(self.net_sources(net_name))
+            sinks.append(self.net_sinks(net_name))
+
+            source = net_props["source_1"]
+            sink = net_props["sink"]
+
+            expression += ":"
+            expression += source
+            expression += ","
+
+            if "Sink" not in [self.design_excitations[source].type, self.design_excitations[sink].type]:
+                move_sink.append(sink)
+            elif self.design_excitations[sink].type == "Source":
+                move_sink.append(sink)
+
+            if "source_2" in net_props:
+                # Both sources in the same net
+                source = net_props["source_2"]
+                expression += net_name
+                expression += ":"
+                expression += source
+                expression += ","
+                break
+        expression = expression[:-1]
+        expression += ")"
+
+        if move_sink:
+            sources = [item for sublist in sources for item in sublist]
+            sinks = [item for sublist in sinks for item in sublist]
+            all_terminals = sources + sinks
+            for q3d_matrix in self.matrices:
+                matrix_available_sources = self.omatrix.ListReduceMatrixReducedSources(q3d_matrix.name, False)
+                matrix_source_list = [element.split(":")[1] for element in matrix_available_sources]
+                matrix_sink_list = list(set(all_terminals).symmetric_difference(set(matrix_source_list)))
+                for initial_sink in sinks:
+                    if initial_sink in matrix_sink_list:
+                        matrix_sink_list.remove(initial_sink)
+                if sorted(matrix_sink_list) == sorted(move_sink):
+                    is_new_matrix = False
+                    matrix_name = q3d_matrix.name
+                    break
+        else:
+            is_new_matrix = False
+
+        if is_new_matrix:
+            matrix = self.insert_reduced_matrix("MoveSink", move_sink)
+            matrix_name = matrix.name
+
+        data = self.post.get_solution_data(
+            expressions=expression, context=matrix_name, variations=variations, setup_sweep_name=setup_sweep_name
+        )
+        return data
+
+    @pyaedt_function_handler()
+    @min_aedt_version("2025.1")
+    def insert_em_field_line(
+        self,
+        assignment: str,
+        points: float | str | None = 1000,
+        name: str | None = None,
+    ) -> NearFieldSetup:
+        """Create a EM field line.
+
+        Parameters
+        ----------
+        assignment : str
+            Polyline name.
+        points : float, str, optional
+            Number of points. The default value is ``1000``.
+        name : str, optional
+            Name of the sphere. The default is ``None``.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modules.hfss_boundary.NearFieldSetup`
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.q3d import Q3d
+        >>> obj = Q3d()
+        >>> obj.insert_em_field_line(assignment="my_polyline", points=1000, name="my_em_field_line")
+
+        """
+        if assignment not in self.modeler.line_names:
+            raise ValueError("Line does not exists in this design.")
+
+        if not self.setups:
+            raise AEDTRuntimeError("At least one setup is required to create an EM field line.")
+
+        if not self.oradfield:  # pragma: no cover
+            raise AEDTRuntimeError("EM fields not available before 2025R1.")
+
+        if not name:
+            name = generate_unique_name("Line")
+
+        props = {
+            "UseCustomRadiationSurface": False,
+            "NumPts": points,
+            "Line": assignment,
+        }
+
+        return self._create_boundary(name, props, "NearFieldLine")
+
+    @pyaedt_function_handler()
+    @min_aedt_version("2025.1")
+    def insert_em_field_rectangle(
+        self,
+        u_length: int | float | str = 20,
+        u_samples: int | float | str = 21,
+        v_length: int | float | str = 20,
+        v_samples: int | float | str = 21,
+        units: str | None = "mm",
+        custom_coordinate_system: str | None = None,
+        name: str | None = None,
+    ) -> NearFieldSetup:
+        """Create an EM field rectangle.
+
+        Parameters
+        ----------
+        u_length : float, str, optional
+            U axis length. The default is ``20``.
+        u_samples : float, str, optional
+            U axis samples. The default is ``21``.
+        v_length : float, str, optional
+            V axis length. The default is ``20``.
+        v_samples : float, str, optional
+            V axis samples. The default is ``21``.
+        units : str
+            Length units. The default is ``"mm"``.
+        custom_coordinate_system : str, optional
+            Local coordinate system to use for far field computation. The default is ``None``.
+        name : str, optional
+            Name of the sphere. The default is ``None``.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modules.hfss_boundary.NearFieldSetup`
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.q3d import Q3d
+        >>> obj = Q3d()
+        >>> obj.insert_em_field_rectangle(u_length=20, u_samples=21, v_length=20, v_samples=21, units="mm")
+
+        """
+        if not self.setups:
+            raise AEDTRuntimeError("At least one setup is required to create an EM field rectangle.")
+
+        if not self.oradfield:  # pragma: no cover
+            raise AEDTRuntimeError("EM fields not available before 2025R1.")
+
+        if not name:
+            name = generate_unique_name("Rectangle")
+
+        props = {
+            "UseCustomRadiationSurface": False,
+            "Length": self.value_with_units(u_length, units),
+            "Width": self.value_with_units(v_length, units),
+            "LengthSamples": u_samples,
+            "WidthSamples": v_samples,
+        }
+
+        if custom_coordinate_system:
+            props["CoordSystem"] = custom_coordinate_system
+        else:
+            props["CoordSystem"] = "Global"
+
+        return self._create_boundary(name, props, "NearFieldRectangle")
+
+    @pyaedt_function_handler()
+    @min_aedt_version("2025.1")
+    def insert_em_field_box(
+        self,
+        u_length: int | float | str = 20,
+        u_samples: int | str = 21,
+        v_length: int | float | str = 20,
+        v_samples: int | str = 21,
+        w_length: int | float | str = 20,
+        w_samples: int | str = 21,
+        units: str | None = "mm",
+        custom_coordinate_system: str | None = None,
+        name: str | None = None,
+    ) -> NearFieldSetup:
+        """Create an EM field box.
+
+        Parameters
+        ----------
+        u_length : float, str, optional
+            U axis length. The default is ``20``.
+        u_samples : int, str, optional
+            U axis samples. The default is ``21``.
+        v_length : float, str, optional
+            V axis length. The default is ``20``.
+        v_samples : int, str, optional
+            V axis samples. The default is ``21``.
+        w_length : float, str, optional
+            W axis length. The default is ``20``.
+        w_samples : int, str, optional
+            W axis samples. The default is ``21``.
+        units : str
+            Length units. The default is ``"mm"``.
+        custom_coordinate_system : str, optional
+            Local coordinate system to use for far field computation. The default is ``None``.
+        name : str, optional
+            Name of the sphere. The default is ``None``.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modules.hfss_boundary.NearFieldSetup`
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.q3d import Q3d
+        >>> obj = Q3d()
+        >>> obj.insert_em_field_box(u_length=20, u_samples=21, v_length=20, v_samples=21, w_length=20, w_samples=21)
+
+        """
+        if not self.setups:
+            raise AEDTRuntimeError("At least one setup is required to create a EM field box.")
+
+        if not self.oradfield:  # pragma: no cover
+            raise AEDTRuntimeError("EM Field not available before 2025R1.")
+
+        if not name:
+            name = generate_unique_name("Box")
+
+        props = {
+            "UseCustomRadiationSurface": False,
+            "Length": self.value_with_units(u_length, units),
+            "Width": self.value_with_units(v_length, units),
+            "Height": self.value_with_units(w_length, units),
+            "LengthSamples": u_samples,
+            "WidthSamples": v_samples,
+            "HeightSamples": w_samples,
+        }
+
+        if custom_coordinate_system:
+            props["CoordSystem"] = custom_coordinate_system
+        else:
+            props["CoordSystem"] = "Global"
+
+        return self._create_boundary(name, props, "NearFieldBox")
+
+    @pyaedt_function_handler()
+    @min_aedt_version("2025.1")
+    def insert_em_field_sphere(
+        self,
+        radius: int | float | str = 20,
+        radius_units: str | None = "mm",
+        x_start: int | float | str = 0,
+        x_stop: int | float | str = 180,
+        x_step: int | float | str = 10,
+        y_start: int | float | str = 0,
+        y_stop: int | float | str = 180,
+        y_step: int | float | str = 10,
+        angle_units: str | None = "deg",
+        custom_coordinate_system: str | None = None,
+        name: str | None = None,
+    ) -> NearFieldSetup:
+        """Create an EM field sphere.
+
+        Parameters
+        ----------
+        radius : float, str, optional
+            Sphere radius. The default is ``20``.
+        radius_units : str
+            Radius units. The default is ``"mm"``.
+        x_start : float, str, optional
+            First angle start value. The default is ``0``.
+        x_stop : float, str, optional
+            First angle stop value. The default is ``180``.
+        x_step : float, str, optional
+            First angle step value. The default is ``10``.
+        y_start : float, str, optional
+            Second angle start value. The default is ``0``.
+        y_stop : float, str, optional
+            Second angle stop value. The default is ``180``.
+        y_step : float, str, optional
+            Second angle step value. The default is ``10``.
+        angle_units : str
+            Angle units. The default is ``"deg"``.
+        custom_coordinate_system : str, optional
+            Local coordinate system to use for far field computation. The default is ``None``.
+        name : str, optional
+            Name of the sphere. The default is ``None``.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modules.hfss_boundary.NearFieldSetup`
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.q3d import Q3d
+        >>> obj = Q3d()
+        >>> obj.insert_em_field_sphere(radius=20, radius_units="mm", x_start=0, x_stop=180, x_step=10)
+
+        """
+        if not self.setups:
+            raise AEDTRuntimeError("At least one setup is required to create an EM field sphere.")
+
+        if not self.oradfield:  # pragma: no cover
+            raise AEDTRuntimeError("EM fields not available before 2025R1.")
+
+        if not name:
+            name = generate_unique_name("Sphere")
+
+        props = {
+            "UseCustomRadiationSurface": False,
+            "Radius": self.value_with_units(radius, radius_units),
+            "ThetaStart": self.value_with_units(x_start, angle_units),
+            "ThetaStop": self.value_with_units(x_stop, angle_units),
+            "ThetaStep": self.value_with_units(x_step, angle_units),
+            "PhiStart": self.value_with_units(y_start, angle_units),
+            "PhiStop": self.value_with_units(y_stop, angle_units),
+            "PhiStep": self.value_with_units(y_step, angle_units),
+            "UseLocalCS": custom_coordinate_system is not None,
+        }
+
+        if custom_coordinate_system:
+            props["CoordSystem"] = custom_coordinate_system
+        else:
+            props["CoordSystem"] = ""
+
+        return self._create_boundary(name, props, "NearFieldSphere")
+
+
+class Q2d(QExtractor, CreateBoundaryMixin, PyAedtBase):
+    """Provides the Q2D app interface.
+
+    This class allows you to create an instance of Q2D and link to an
+    existing project or create a new one.
+
+    Parameters
+    ----------
+    project : str, optional
+        Name of the project to select or the full path to the project
+        or AEDTZ archive to open. The default is ``None``, in which
+        case an attempt is made to get an active project. If no
+        projects are present, an empty project is created.
+    design : str, optional
+        Name of the design to select. The default is ``None``, in
+        which case an attempt is made to get an active design. If no
+        designs are present, an empty design is created.
+    solution_type : str, optional
+        Solution type to apply to the design. The default is
+        ``None``, in which case the default type is applied.
+    setup : str, optional
+        Name of the setup to use as the nominal. The default is
+        ``None``, in which case the active setup is used or
+        nothing is used.
+    version : str, int, float, optional
+        Version of AEDT to use. The default is ``None``, in which case
+        the active version or latest installed version is used.  This
+        parameter is ignored when a script is launched within AEDT.
+        Examples of input values are ``261``, ``26.1``, ``2026.1``, ``"2026.1"``.
+    non_graphical : bool, optional
+        Whether to launch AEDT in non-graphical mode. The default
+        is ``False``, in which case AEDT is launched in graphical mode.
+        This parameter is ignored when a script is launched within AEDT.
+    new_desktop : bool, optional
+        Whether to launch an instance of AEDT in a new thread, even if
+        another instance of the ``version`` is active on the
+        machine. The default is ``False``. This parameter is ignored
+        when a script is launched within AEDT.
+    close_on_exit : bool, optional
+        Whether to release AEDT on exit. The default is ``False``.
+    student_version : bool, optional
+        Whether to open the AEDT student version. This parameter is
+        ignored when a script is launched within AEDT.
+    machine : str, optional
+        Machine name to connect the oDesktop session to. This works only in 2022 R2
+        and later. The remote server must be up and running with the command
+        `"ansysedt.exe -grpcsrv portnum"`. If the machine is `"localhost"`,
+        the server also starts if not present.
+    port : int, optional
+        Port number on which to start the oDesktop communication on an already existing server.
+        This parameter is ignored when creating a new server. It works only in 2022 R2 or later.
+        The remote server must be up and running with the command `"ansysedt.exe -grpcsrv portnum"`.
+    aedt_process_id : int, optional
+        Process ID for the instance of AEDT to point PyAEDT at. The default is
+        ``None``. This parameter is only used when ``new_desktop = False``.
+    remove_lock : bool, optional
+        Whether to remove lock to project before opening it or not.
+        The default is ``False``, which means to not unlock
+        the existing project if needed and raise an exception.
+
+    Examples
+    --------
+    Create an instance of Q2D and connect to an existing Q2D
+    design or create a new Q2D design if one does not exist.
+
+    >>> from ansys.aedt.core import Q2d
+    >>> app = Q2d()
+    PyAEDT INFO: No project is defined...
+    PyAEDT INFO: Active design is set to...
+
+    Create an instance of Q2D and link to a project named
+    ``Q2dProject``. If this project does not exist, create one with
+    this name.
+
+    >>> app = Q2d("Q2dProject")
+    PyAEDT INFO: Project Q2dProject has been created.
+    PyAEDT INFO: No design is present. Inserting a new design.
+    PyAEDT INFO: Added design ...
+
+    Create an instance of Q2D and link to a design named
+    ``Q2dDesign1`` in a project named ``Q2dProject``.
+
+    >>> app = Q2d("Q2dProject", "Q2dDesign1")
+    PyAEDT INFO: Added design 'Q2dDesign1' of type 2D Extractor.
+
+    Create an instance of Q2D and open the specified project,
+    which is named ``"myfile.aedt"``.
+
+    >>> app = Q2d("myfile.aedt")
+    PyAEDT INFO: Project myfile has been created.
+    PyAEDT INFO: No design is present. Inserting a new design.
+    PyAEDT INFO: Added design...
+
+    Create an instance of Q2D using the 2026 R1 release and open
+    the specified project, which is named ``"myfile2.aedt"``.
+
+    >>> app = Q2d(version=261, project="myfile2.aedt")
+    PyAEDT INFO: Project myfile2 has been created.
+    PyAEDT INFO: No design is present. Inserting a new design.
+    PyAEDT INFO: Added design...
+
+    Create an instance of Q2D using the 2026 R1 student version and open
+    the specified project, which is named ``"myfile3.aedt"``.
+
+    >>> app = Q2d(version="261", project="myfile3.aedt", student_version=True)
+    PyAEDT INFO: Project myfile3 has been created.
+    PyAEDT INFO: No design is present. Inserting a new design.
+    PyAEDT INFO: Added design...
+
+    """
+
+    @property  # for legacy purposes
+    def dim(self):
+        """Dimension.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.q3d import Q2d
+        >>> obj = Q2d()
+        >>> obj.dim
+
+        """
+        return self.modeler.dimension
+
+    def __init__(
+        self,
+        project: str | None = None,
+        design: str | None = None,
+        solution_type: str | None = None,
+        setup: str | None = None,
+        version: str | None = None,
+        non_graphical: bool | None = False,
+        new_desktop: bool | None = False,
+        close_on_exit: bool | None = False,
+        student_version: bool | None = False,
+        machine: str | None = "",
+        port: int | None = 0,
+        aedt_process_id: int | None = None,
+        remove_lock: bool | None = False,
+    ) -> None:
+        self.is3d = False
+        QExtractor.__init__(
+            self,
+            "EXTRACTOR2D",
+            project,
+            design,
+            solution_type,
+            setup,
+            version,
+            non_graphical,
+            new_desktop,
+            close_on_exit,
+            student_version,
+            machine,
+            port,
+            aedt_process_id,
+            remove_lock=remove_lock,
+        )
+
+    def _init_from_design(self, *args, **kwargs) -> None:
+        self.__init__(*args, **kwargs)
+
+    @pyaedt_function_handler()
+    def create_rectangle(
+        self, origin: list, sizes: list, name: str | None = "", material: str | None = ""
+    ) -> "Object3d":
+        """Create a rectangle.
+
+        Parameters
+        ----------
+        origin : list
+            List of ``[x, y]`` coordinates for the starting point of the rectangle.
+        sizes : list
+            List of ``[width, height]`` dimensions.
+        name : str, optional
+            Name of the rectangle. The default is ``None``, in which case
+            the default name is assigned.
+        material : str, optional
+            Name of the material. The default is ``None``, in which case
+            the default material is used.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modeler.cad.object_3d.Object3d`
+            3D object.
+
+        References
+        ----------
+        >>> oEditor.CreateRectangle
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.q3d import Q2d
+        >>> obj = Q2d()
+        >>> obj.create_rectangle(origin=[0, 0], sizes=[10, 5], name="MyRectangle", material="copper")
+
+        """
+        return self.modeler.create_rectangle(origin=origin, sizes=sizes, name=name, material=material)
+
+    @pyaedt_function_handler()
+    def assign_single_conductor(
+        self,
+        assignment: "list[Object3d] | Object3d",
+        name: str | None = "",
+        conductor_type: str | None = "SignalLine",
+        solve_option: str | None = "SolveInside",
+        thickness: float | None = None,
+        units: str | None = "um",
+    ) -> BoundaryObject:
+        """Assign the conductor type to sheets.
+
+        Parameters
+        ----------
+        assignment : list or :class:`ansys.aedt.core.modeler.cad.object_3d.Object3d`
+            List of Object3D.
+        name : str, optional
+            Name of the conductor. The default is ``""``, in which case the default name is used.
+        conductor_type : str, optional
+            Type of the conductor. Options are ``"SignalLine"`` and ``"ReferenceGround"`` and ``"SurfaceGround"``.
+            The default is ``"SignalLine"``.
+        solve_option : str, optional
+            Method for solving. Options are ``"SolveInside"``, ``"SolveOnBoundary"``, and ``"Automatic"``.
+            The default is ``"SolveInside"``.
+        thickness : float, optional
+            Conductor thickness. The default is ``None``, in which case the conductor thickness is obtained by dividing
+            the conductor's area by its perimeter (A/p). If multiple conductors are selected, the average conductor
+            thickness is used.
+        units : str, optional
+            Thickness unit. The default is ``"um"``.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modules.boundary.common.BoundaryObject`
+            Source object.
+
+        References
+        ----------
+        >>> oModule.AssignSingleSignalLine
+        >>> oModule.AssignSingleReferenceGround
+        >>> oModule.AssignSingleSurfaceGround
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.q3d import Q2d
+        >>> obj = Q2d()
+        >>> obj.assign_single_conductor(assignment=my_sheet, name="MyConductor")
+
+        """
+        if not name:
+            name = generate_unique_name(name)
+
+        if isinstance(assignment, list):
+            a = assignment
+            obj_names = [i.name for i in assignment]
+        else:
+            a = [assignment]
+            obj_names = [assignment.name]
+
+        if not thickness:
+            t_list = []
+            for t_obj in a:
+                perimeter = 0
+                for edge in t_obj.edges:
+                    perimeter = perimeter + edge.length
+                t_list.append(t_obj.faces[0].area / perimeter)
+            thickness = sum(t_list) / len(t_list)
+
+        props = dict({"Objects": obj_names, "SolveOption": solve_option, "Thickness": str(thickness) + units})
+
+        return self._create_boundary(name, props, conductor_type)
+
+    @pyaedt_function_handler()
+    def assign_huray_finitecond_to_edges(
+        self,
+        assignment: "list[Object3d] | Object3d",
+        radius: float | str,
+        ratio: float | str,
+        units: str | None = "um",
+        name: str | None = "",
+    ) -> BoundaryObject:
+        """Assign the Huray surface roughness model to edges.
+
+        Parameters
+        ----------
+        assignment : list or :class:`ansys.aedt.core.modeler.cad.object_3d.Object3d`
+            List of Object3D.
+        radius : float or str
+            Radius of the spheres. It can be a number or a string with units.
+        ratio : float or str
+            Ratio.
+        units : str, optional
+            The default is ``"um"``.
+        name : str, optional
+            The default is ``""``, in which case the default name is used.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modules.boundary.common.BoundaryObject`
+            Source object.
+
+        References
+        ----------
+        >>> oMdoule.AssignFiniteCond
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.q3d import Q2d
+        >>> q2d = Q2d()
+        >>> rect = q2d.create_rectangle([6, 6], [5, 3], name="Rectangle1", material="Copper")
+        >>> q2d.assign_single_conductor(assignment=rect, solve_option="SolveOnBoundary")
+        >>> q2d.assign_huray_finitecond_to_edges(
+        ...     assignment=rect.edges,
+        ...     radius=0.5,
+        ...     ratio=1.5,
+        ... )
+
+        """
+        if not name:
+            name = generate_unique_name(name)
+
+        if units is None:
+            units = "um"
+
+        if not isinstance(radius, str):
+            ra = str(radius) + units
+        else:
+            ra = radius
+
+        a = self.modeler.convert_to_selections(assignment, True)
+
+        props = dict({"Edges": a, "UseCoating": False, "Radius": ra, "Ratio": str(ratio)})
+
+        return self._create_boundary(name, props, "Finite Conductivity")
+
+    @pyaedt_function_handler()
+    def auto_assign_conductors(self) -> bool:
+        """Automatically assign conductors to signal lines.
+
+        Returns
+        -------
+        bool
+            ``True`` when successful, ``False`` when failed.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.q3d import Q2d
+        >>> obj = Q2d()
+        >>> obj.auto_assign_conductors()
+
+        """
+        original_nets = list(self.oboundary.GetExcitations())
+        self.oboundary.AutoAssignSignals()
+        new_nets = [i for i in list(self.oboundary.GetExcitations()) if i not in original_nets]
+        i = 0
+        while i < len(new_nets):
+            objects = self.modeler.convert_to_selections(
+                [int(k) for k in list(self.oboundary.GetExcitationAssignment(new_nets[i]))], True
+            )
+            props = dict({"Objects": objects})
+            bound = BoundaryObject(self, new_nets[i], props, new_nets[i + 1])
+            self._boundaries[bound.name] = bound
+            i += 2
+        if new_nets:
+            self.logger.info(f"{len(new_nets)} Nets have been identified: {', '.join(new_nets)}")
+        else:
+            self.logger.info("No new nets identified")
+        return True
+
+    @pyaedt_function_handler()
+    def export_w_elements(self, export_folder: str | Path | None = None) -> list:
+        """Export all W-elements to files.
+
+        .. deprecated:: 1.5.0
+           Use :meth:`export_equivalent_circuit` with file_type=WElement instead.
+
+        Parameters
+        ----------
+        export_folder : str or :class:`pathlib.Path`, optional
+            Full path to the folder to export files to. The default is ``None``, in
+            which case the working directory is used.
+
+        Returns
+        -------
+        list
+            List of all exported files.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.q3d import Q2d
+        >>> obj = Q2d()
+        >>> obj.export_w_elements("C:/Users/UserName/ExportedWElements")
+
+        """
+        import warnings
+
+        warnings.warn(
+            "`export_w_elements` is deprecated and will be removed in 1.5.0. "
+            "Use `export_equivalent_circuit` instead with file_type=WElement.",
+            DeprecationWarning,
+        )
+
+        exported_files = []
+        if not export_folder:
+            export_folder = self.working_directory
+        if not Path(export_folder).exists():
+            Path(export_folder).mkdir()
+        setups = self.oanalysis.GetSetups()
+
+        for s in setups:
+            sweeps = self.oanalysis.GetSweeps(s)
+            if not sweeps:
+                sweeps = ["LastAdaptive"]
+            for sweep in sweeps:
+                variation_array = self.list_of_variations(s, sweep)
+                solution_name = f"{s} : {sweep}"
+                if len(variation_array) == 1:
+                    try:
+                        export_file = f"{self.project_name}_{s}_{sweep}.sp"
+                        export_path = Path(export_folder) / export_file
+                        subckt_name = f"w_{self.project_name}"
+                        self.oanalysis.ExportCircuit(
+                            solution_name,
+                            variation_array[0],
+                            str(export_path),
+                            [
+                                "NAME:CircuitData",
+                                "MatrixName:=",
+                                "Original",
+                                "NumberOfCells:=",
+                                "1",
+                                "UserHasChangedSettings:=",
+                                True,
+                                "IncludeCap:=",
+                                False,
+                                "IncludeCond:=",
+                                False,
+                                ["NAME:CouplingLimits", "CouplingLimitType:=", "None"],
+                                "IncludeR:=",
+                                False,
+                                "IncludeL:=",
+                                False,
+                                "ExportDistributed:=",
+                                True,
+                                "LumpedLength:=",
+                                "1meter",
+                                "RiseTime:=",
+                                "1e-09s",
+                            ],
+                            subckt_name,
+                            "WElement",
+                            0,
+                        )
+                        exported_files.append(export_path)
+                        self.logger.info("Exported W-element: %s", export_path)
+                    except Exception:  # pragma: no cover
+                        self.logger.warning("Export W-element failed")
+                else:
+                    varCount = 0
+                    for variation in variation_array:
+                        varCount += 1
+                        try:
+                            export_file = f"{self.project_name}_{s}_{sweep}_{varCount}.sp"
+                            export_path = Path(export_folder) / export_file
+                            subckt_name = f"w_{self.project_name}_{varCount}"
+                            self.oanalysis.ExportCircuit(
+                                solution_name,
+                                variation,
+                                str(export_path),
+                                [
+                                    "NAME:CircuitData",
+                                    "MatrixName:=",
+                                    "Original",
+                                    "NumberOfCells:=",
+                                    "1",
+                                    "UserHasChangedSettings:=",
+                                    True,
+                                    "IncludeCap:=",
+                                    False,
+                                    "IncludeCond:=",
+                                    False,
+                                    ["NAME:CouplingLimits", "CouplingLimitType:=", "None"],
+                                    "IncludeR:=",
+                                    False,
+                                    "IncludeL:=",
+                                    False,
+                                    "ExportDistributed:=",
+                                    True,
+                                    "LumpedLength:=",
+                                    "1meter",
+                                    "RiseTime:=",
+                                    "1e-09s",
+                                ],
+                                subckt_name,
+                                "WElement",
+                                0,
+                            )
+                            exported_files.append(export_path)
+                            self.logger.info("Exported W-element: %s", export_path)
+                        except Exception:  # pragma: no cover
+                            self.logger.warning("Export W-element failed")
+        return exported_files
+
+    @pyaedt_function_handler()
+    def toggle_conductor_type(self, assignment: str, new_type: str) -> bool:
+        """Change the conductor type.
+
+        Parameters
+        ----------
+        assignment : str
+            Name of the conductor to update.
+        new_type : str
+            New conductor type.
+
+        Returns
+        -------
+        bool
+            ``True`` when successful, ``False`` when failed.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.q3d import Q2d
+        >>> obj = Q2d()
+        >>> obj.toggle_conductor_type(assignment="MyConductor", new_type="ReferenceGround")
+
+        """
+        try:
+            self.oboundary.ToggleConductor(assignment, new_type)
+            for bound in self.boundaries:
+                if bound.name == assignment:
+                    bound.type = new_type
+            self.logger.info("Conductor type correctly updated")
+            return True
+        except Exception:
+            self.logger.error("Error in updating conductor type")
+            return False
+
+    @pyaedt_function_handler()
+    def create_setup(self, name: str | None = "MySetupAuto", setup_type: int | str | None = None, **kwargs) -> SetupQ3D:
+        """Create an analysis setup for 2D Extractor.
+
+        Optional arguments are passed along with the ``setup_type`` and ``name``
+        parameters.  Keyword names correspond to the ``setup_type``
+        corresponding to the native AEDT API.  The list of
+        keywords here is not exhaustive.
+
+        Parameters
+        ----------
+        name : str, optional
+            Name of the setup. The default is "Setup1".
+        setup_type : int, str, optional
+            Type of the setup. Options are "IcepakSteadyState"
+            and "IcepakTransient". The default is "IcepakSteadyState".
+        **kwargs : dict, optional
+            Available keys depend on the setup chosen.
+            For more information, see :doc:`../SetupTemplatesQ3D`.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modules.solve_setup.SetupQ3D`
+            Solver Setup object.
+
+        References
+        ----------
+        >>> oModule.InsertSetup
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Q2d
+        >>> app = Q2d()
+        >>> app.create_setup(name="Setup1", RLDataBlock__MinPass=2)
+
+        """
+        if setup_type is None:
+            setup_type = self.design_solutions.default_setup
+        elif setup_type in SetupKeys.SetupNames:
+            setup_type = SetupKeys.SetupNames.index(setup_type)
+        if "props" in kwargs:
+            return self._create_setup(name=name, setup_type=setup_type, props=kwargs["props"])
+        else:
+            setup = self._create_setup(name=name, setup_type=setup_type)
+        setup.auto_update = False
+        for arg_name, arg_value in kwargs.items():
+            if setup[arg_name] is not None:
+                setup[arg_name] = arg_value
+        setup.auto_update = True
+        setup.update()
+        return setup

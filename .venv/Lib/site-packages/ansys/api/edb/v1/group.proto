@@ -1,0 +1,69 @@
+// Proto file representing the EDB Group class
+
+syntax = "proto3";
+
+// Package
+package ansys.api.edb.v1;
+
+// Imports
+import "ansys/api/edb/v1/edb_messages.proto";
+import "ansys/api/edb/v1/hierarchy_obj.proto";
+
+// Group service definition
+service GroupService {
+  // summary: Create a group
+  // io_flags:
+  //   - buffer
+  //   - returns_future
+  rpc Create(ObjectNameInLayoutMessage) returns (EDBObjMessage) {}
+
+  // summary: Finds a group by name in the given layout
+  // io_flags:
+  //   - cache
+  rpc FindByName(ObjectNameInLayoutMessage) returns (EDBObjMessage) {}
+
+  // summary: Add a member to the group
+  // io_flags:
+  //   - buffer
+  rpc AddMember(GroupModifyMemberMessage) returns (google.protobuf.Empty) {}
+
+  // summary: Remove a member from the group
+  // io_flags:
+  //   - buffer
+  rpc RemoveMember(GroupModifyMemberMessage) returns (google.protobuf.Empty) {}
+
+  // summary: Ungroup this group
+  // io_flags:
+  //   - buffer
+  rpc Ungroup(BoolPropertyMessage) returns (google.protobuf.Empty) {}
+
+  // summary: Get iterable for group members
+  // io_flags:
+  //   - read_no_cache
+  rpc GetMembers(EDBObjMessage) returns (EDBObjCollectionMessage) {}
+
+  // summary: Stream iterable for group members
+  // io_flags:
+  //   - read_no_cache
+  rpc StreamMembers(EDBObjMessage) returns (stream EDBObjCollectionMessage) {}
+
+  // summary: Get the type of the group
+  // io_flags:
+  //   - cache
+  rpc GetGroupType(EDBObjMessage) returns (GroupTypeMessage) {}
+}
+
+message GroupModifyMemberMessage {
+  EDBObjMessage target = 1;
+  EDBObjMessage member = 2;
+}
+
+message GroupTypeMessage {
+  enum GroupType {
+    GROUP = 0;
+    COMPONENT = 1;
+    STRUCTURE_3D = 2;
+    VIA_GROUP = 3;
+  }
+  GroupType group_type = 1;
+}

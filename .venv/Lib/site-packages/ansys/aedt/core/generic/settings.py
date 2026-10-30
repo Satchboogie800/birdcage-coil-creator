@@ -1,0 +1,1448 @@
+# -*- coding: utf-8 -*-
+#
+# Copyright (C) 2021 - 2026 Synopsys, Inc. and ANSYS, Inc. All rights reserved.
+# SPDX-License-Identifier: MIT
+#
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+"""The module contains the ``Settings`` and ``_InnerProjectSettings`` classes.
+
+The first class encapsulates the settings associated with PyAEDT and AEDT including logging,
+LSF, environment variables and general settings. Most of the default values used can be modified
+using a YAML configuration file. An example of such file can be found in the documentation, see
+`Settings YAML file <https://aedt.docs.pyansys.com/version/stable/User_guide/settings.html>`_.
+The path to the configuration file should be specified with the environment variable
+``PYAEDT_LOCAL_SETTINGS_PATH``. If no environment variable is set, the class will look for the
+configuration file ``pyaedt_settings.yaml`` in the user's ``APPDATA`` folder for Windows and
+``HOME`` folder for Linux.
+
+The second class is intended for internal use only and shouldn't be modified by users.
+
+Examples
+--------
+>>> from ansys.aedt.core.generic.settings import settings
+>>> settings.enable_screen_logs = False
+
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+from pathlib import Path
+import time
+from typing import Any
+import uuid
+
+from ansys.aedt.core import pyaedt_path
+from ansys.aedt.core.base import PyAedtBase
+from ansys.aedt.core.generic.scheduler import DEFAULT_CUSTOM_SUBMISSION_STRING
+from ansys.aedt.core.generic.scheduler import DEFAULT_NUM_CORES
+
+is_linux = os.name == "posix"
+"""Flag indicating whether linux is enabled."""
+
+# Settings allowed to be updated using a YAML configuration file.
+ALLOWED_LOG_SETTINGS = [
+    "enable_debug_edb_logger",
+    "enable_debug_geometry_operator_logger",
+    "enable_debug_grpc_api_logger",
+    "enable_debug_internal_methods_logger",
+    "enable_debug_logger",
+    "enable_debug_methods_argument_logger",
+    "enable_desktop_logs",
+    "enable_file_logs",
+    "enable_global_log_file",
+    "enable_local_log_file",
+    "enable_logger",
+    "enable_monitor_in_aedt",
+    "enable_screen_logs",
+    "global_log_file_name",
+    "global_log_file_size",
+    "logger_datefmt",
+    "logger_file_path",
+    "logger_formatter",
+    "aedt_log_file",
+]
+"""Allowed log settings."""
+ALLOWED_LSF_SETTINGS = [
+    "custom_lsf_command",
+    "lsf_aedt_command",
+    "lsf_osrel",
+    "lsf_queue",
+    "lsf_ram",
+    "lsf_timeout",
+    "lsf_ui",
+    "use_lsf_scheduler",
+]
+"""Allowed LSF settings."""
+ALLOWED_GENERAL_SETTINGS = [
+    "lazy_load",
+    "objects_lazy_load",
+    "aedt_version",
+    "desktop_launch_timeout",
+    "disable_bounding_box_sat",
+    "edb_dll_path",
+    "enable_error_handler",
+    "enable_pandas_output",
+    "force_error_on_missing_project",
+    "local_example_folder",
+    "number_of_grpc_api_retries",
+    "release_on_exception",
+    "retry_n_times_time_interval",
+    "use_grpc_api",
+    "use_multi_desktop",
+    "wait_for_license",
+    "remote_api",
+    "remote_rpc_service_manager_port",
+    "pyaedt_server_path",
+    "remote_rpc_session_temp_folder",
+    "block_figure_plot",
+    "skip_license_check",
+    "num_cores",
+    "use_local_example_data",
+    "pyd_libraries_path",
+    "pyd_libraries_user_path",
+]
+"""Allowed general settings."""
+ALLOWED_GRPC_SETTINGS = ["grpc_secure_mode", "grpc_local", "grpc_listen_all", "pyedb_use_grpc"]
+"""Allowed gRPC settings."""
+ALLOWED_AEDT_ENV_VAR_SETTINGS = [
+    "ANSYSEM_FEATURE_F335896_MECHANICAL_STRUCTURAL_SOLN_TYPE_ENABLE",
+    "ANSYSEM_FEATURE_F395486_RIGID_FLEX_BENDING_ENABLE",
+    "ANSYSEM_FEATURE_F538630_MECH_TRANSIENT_THERMAL_ENABLE",
+    "ANSYSEM_FEATURE_F545177_ECAD_INTEGRATION_WITH_APHI_ENABLE",
+    "ANSYSEM_FEATURE_F650636_MECH_LAYOUT_COMPONENT_ENABLE",
+    "ANSYSEM_FEATURE_S432616_LAYOUT_COMPONENT_IN_3D_ENABLE",
+    "ANSYSEM_FEATURE_SF159726_SCRIPTOBJECT_ENABLE",
+    "ANSYSEM_FEATURE_SF222134_CABLE_MODELING_ENHANCEMENTS_ENABLE",
+    "ANSYSEM_FEATURE_SF6694_NON_GRAPHICAL_COMMAND_EXECUTION_ENABLE",
+    "ANS_MESHER_PROC_DUMP_PREPOST_BEND_SM3",
+    "ANSYSEM_FEATURE_F826442_MULTI_FINITE_ARRAYS_ENABLE",
+    "ANS_NODEPCHECK",
+    "ANSYSEM_FEATURE_F629017_HARMONIC_APHI_SOLUTION_ENABLE",
+    "AnsysSendMsg",
+    "ANSYSEM_FEATURE_F544773_SSFIT_AUTO_SELECTION_ENABLE",
+]
+"""Allowed AEDT env var settings."""
+
+DEFAULT_GRPC_LOCAL: bool = True
+"""Default gRPC local."""
+DEFAULT_GRPC_SECURE_MODE: bool = True
+"""Default gRPC secure mode."""
+DEFAULT_GRPC_LISTEN_ALL: bool = False
+"""Default gRPC listen all."""
+
+
+def generate_log_filename() -> str:
+    """Generate a log filename.
+
+    Examples
+    --------
+    >>> from ansys.aedt.core.generic.settings import generate_log_filename
+    >>> log_name = generate_log_filename()
+
+    """
+    base = "pyaedt"
+    username = Path.home().name
+    unique_id = uuid.uuid4()
+    return f"{base}_{username}_{unique_id}.log"
+
+
+class _InnerProjectSettings:  # pragma: no cover
+    """Global inner project settings.
+
+    This class is intended for internal use only.
+    """
+
+    properties: dict = {}
+    """Value for properties."""
+    time_stamp: int | float = 0
+    """Value for time stamp."""
+
+
+class Settings(PyAedtBase):
+    """Manages all PyAEDT environment variables and global settings.
+
+    Examples
+    --------
+    >>> from ansys.aedt.core.generic.settings import Settings
+    >>> custom_settings = Settings()
+    >>> custom_settings.enable_screen_logs = False
+
+    """
+
+    def __init__(self) -> None:
+        # Setup default values then load values from PersoalLib' settings_config.yaml if it exists.
+        # Settings related to logging
+        self.__logger: logging.Logger | None = None
+        self.__enable_logger: bool = True
+        self.__enable_desktop_logs: bool = False
+        self.__enable_screen_logs: bool = True
+        self.__enable_file_logs: bool = True
+        self.__logger_file_path: str | None = None
+        self.__logger_formatter: str = "%(asctime)s:%(destination)s:%(extra)s%(levelname)-8s:%(message)s"
+        self.__logger_datefmt: str = "%Y/%m/%d %H.%M.%S"
+        self.__enable_debug_edb_logger: bool = False
+        self.__enable_debug_grpc_api_logger: bool = False
+        self.__enable_debug_methods_argument_logger: bool = False
+        self.__enable_debug_geometry_operator_logger: bool = False
+        self.__enable_debug_internal_methods_logger: bool = False
+        self.__enable_debug_logger: bool = False
+        self.__global_log_file_name: str = generate_log_filename()
+        self.__enable_global_log_file: bool = True
+        self.__enable_local_log_file: bool = False
+        self.__global_log_file_size: int = 10
+        self.__aedt_log_file: str | None = None
+        # Settings related to Linux systems running LSF scheduler
+        self.__num_cores = DEFAULT_NUM_CORES
+        self.__lsf_ram: int = 1000
+        self.__use_lsf_scheduler: bool = False
+        self.__lsf_osrel: str | None = None
+        self.__lsf_ui: int | None = None
+        self.__lsf_aedt_command: str = "ansysedt"
+        self.__lsf_timeout: int = 3600
+        self.__lsf_queue: str | None = None
+        self.__custom_lsf_command = DEFAULT_CUSTOM_SUBMISSION_STRING
+        # Settings related to environment variables that are set before launching a new AEDT session
+        # This includes those that enable the beta features!
+        self.__aedt_environment_variables: dict[str, str] = {
+            "ANSYSEM_FEATURE_SF6694_NON_GRAPHICAL_COMMAND_EXECUTION_ENABLE": "1",
+            "ANSYSEM_FEATURE_SF159726_SCRIPTOBJECT_ENABLE": "1",
+            "ANSYSEM_FEATURE_SF222134_CABLE_MODELING_ENHANCEMENTS_ENABLE": "1",
+            "ANSYSEM_FEATURE_F395486_RIGID_FLEX_BENDING_ENABLE": "1",
+            "ANSYSEM_FEATURE_S432616_LAYOUT_COMPONENT_IN_3D_ENABLE": "1",
+            "ANSYSEM_FEATURE_F545177_ECAD_INTEGRATION_WITH_APHI_ENABLE": "1",
+            "ANSYSEM_FEATURE_F650636_MECH_LAYOUT_COMPONENT_ENABLE": "1",
+            "ANSYSEM_FEATURE_F538630_MECH_TRANSIENT_THERMAL_ENABLE": "1",
+            "ANSYSEM_FEATURE_F335896_MECHANICAL_STRUCTURAL_SOLN_TYPE_ENABLE": "1",
+            "ANS_MESHER_PROC_DUMP_PREPOST_BEND_SM3": "1",
+            "ANSYSEM_FEATURE_F826442_MULTI_FINITE_ARRAYS_ENABLE": "1",
+            "AnsysSendMsg": "1",
+            "ANSYSEM_FEATURE_F629017_HARMONIC_APHI_SOLUTION_ENABLE": "1",
+            "ANSYSEM_FEATURE_F544773_SSFIT_AUTO_SELECTION_ENABLE": "1",
+        }
+        if is_linux:
+            self.__aedt_environment_variables["ANS_NODEPCHECK"] = "1"
+
+        # General settings
+        self.__enable_error_handler: bool = False
+        self.__release_on_exception: bool = True
+        self.__aedt_version: str | None = None
+        self.__use_multi_desktop: bool = False
+        self.__use_grpc_api: bool | None = None
+        self.__disable_bounding_box_sat = False
+        self.__force_error_on_missing_project = False
+        self.__enable_pandas_output = False
+        self.__edb_dll_path: Path | None = None
+        self.__desktop_launch_timeout: int = 120
+        self.__number_of_grpc_api_retries: int = 6
+        self.__retry_n_times_time_interval: float = 0.1
+        self.__wait_for_license: bool = False
+        self.__lazy_load: bool = True
+        self.__objects_lazy_load: bool = True
+        self.__skip_license_check: bool = True
+        # Previously 'public' attributes
+        self.__formatter: logging.Formatter | None = None
+        self.__remote_rpc_session: Any = None
+        self.__remote_rpc_session_temp_folder: str = ""
+        self.__remote_rpc_service_manager_port: int = 17878
+        self.__remote_api: bool = False
+        self.__time_tick = time.time()
+        self.__pyaedt_server_path = ""
+        self.__block_figure_plot = False
+        self.__local_example_folder = None
+        self.__use_local_example_data = False
+        self.__pyd_libraries_path: Path = Path(pyaedt_path) / "syslib"
+        self.__pyd_libraries_user_path: Path | None = None
+        self.__grpc_secure_mode = DEFAULT_GRPC_SECURE_MODE
+        self.__grpc_local = DEFAULT_GRPC_LOCAL
+        self.__grpc_listen_all = DEFAULT_GRPC_LISTEN_ALL
+        self.__pyedb_use_grpc: bool | None = None
+        self.__enable_monitor_in_aedt: bool = False
+        self._update_settings()
+
+    def _update_settings(self) -> None:
+        # Load local settings if YAML configuration file exists.
+        pyaedt_settings_path = os.environ.get("PYAEDT_LOCAL_SETTINGS_PATH", "")
+        if not pyaedt_settings_path:
+            if is_linux:
+                pyaedt_settings_path = Path(os.environ["HOME"]) / "pyaedt_settings.yaml"
+            else:
+                pyaedt_settings_path = Path(os.environ["APPDATA"]) / "pyaedt_settings.yaml"
+        self.load_yaml_configuration(pyaedt_settings_path)
+
+    # ########################## gRPC properties ##########################
+
+    @property
+    def enable_monitor_in_aedt(self) -> bool:
+        """Enable monitor in AEDT application during its launch.
+        Default is ``False`` to guarantee back compatibility.
+        """
+        return self.__enable_monitor_in_aedt
+
+    @enable_monitor_in_aedt.setter
+    def enable_monitor_in_aedt(self, value: bool) -> None:
+        self.__enable_monitor_in_aedt = value
+
+    @property
+    def pyedb_use_grpc(self) -> bool | None:
+        """Flag for whether to use PyEDB with gRPC or not.
+        The default is ``None``.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.pyedb_use_grpc = True
+
+        """
+        return self.__pyedb_use_grpc
+
+    @pyedb_use_grpc.setter
+    def pyedb_use_grpc(self, value: bool) -> None:
+        self.__pyedb_use_grpc = value
+
+    @property
+    def grpc_secure_mode(self) -> bool:
+        """Flag for whether to use secure mode for gRPC API.
+        The default is ``True``.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.grpc_secure_mode = False
+
+        """
+        return self.__grpc_secure_mode
+
+    @grpc_secure_mode.setter
+    def grpc_secure_mode(self, val: bool) -> None:
+        self.__grpc_secure_mode = val
+
+    @property
+    def grpc_local(self) -> bool:
+        """Flag for whether to use local connection for gRPC API.
+        The default is ``True``.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.grpc_local = True
+
+        """
+        return self.__grpc_local
+
+    @grpc_local.setter
+    def grpc_local(self, val: bool) -> None:
+        self.__grpc_local = val
+
+    @property
+    def grpc_listen_all(self) -> bool:
+        """Flag for whether to listen on all interfaces for gRPC API.
+        The default is ``False``.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.grpc_listen_all = False
+
+        """
+        return self.__grpc_listen_all
+
+    @grpc_listen_all.setter
+    def grpc_listen_all(self, val: bool) -> None:
+        self.__grpc_listen_all = val
+
+    # ########################## Logging properties ##########################
+
+    @property
+    def logger(self) -> logging.Logger | None:
+        """Active logger.
+
+        Examples
+        --------
+        >>> import logging
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.logger = logging.getLogger("pyaedt")
+
+        """
+        return self.__logger
+
+    @logger.setter
+    def logger(self, val: logging.Logger | None) -> None:
+        self.__logger = val
+
+    @property
+    def block_figure_plot(self) -> bool:
+        """Block matplotlib figure plot during python script run until the user close it manually.
+
+        Default is ``False``.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.block_figure_plot = True
+
+        """
+        return self.__block_figure_plot
+
+    @block_figure_plot.setter
+    def block_figure_plot(self, val: bool) -> None:
+        self.__block_figure_plot = val
+
+    @property
+    def enable_desktop_logs(self) -> bool:
+        """Enable or disable the logging to the AEDT message window.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.enable_desktop_logs = True
+
+        """
+        return self.__enable_desktop_logs
+
+    @enable_desktop_logs.setter
+    def enable_desktop_logs(self, val: bool) -> None:
+        self.__enable_desktop_logs = val
+
+    @property
+    def global_log_file_size(self) -> int:
+        """Global PyAEDT log file size in MB. The default value is ``10``.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.global_log_file_size = 20
+
+        """
+        return self.__global_log_file_size
+
+    @global_log_file_size.setter
+    def global_log_file_size(self, value: int) -> None:
+        self.__global_log_file_size = value
+
+    @property
+    def enable_global_log_file(self) -> bool:
+        """Enable or disable the global PyAEDT log file located in the global temp folder.
+
+        The default is ``True``.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.enable_global_log_file = True
+
+        """
+        return self.__enable_global_log_file
+
+    @enable_global_log_file.setter
+    def enable_global_log_file(self, value: bool) -> None:
+        self.__enable_global_log_file = value
+
+    @property
+    def enable_local_log_file(self) -> bool:
+        """Enable or disable the local PyAEDT log file located in the ``projectname.pyaedt`` project folder.
+
+        The default is ``True``.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.enable_local_log_file = True
+
+        """
+        return self.__enable_local_log_file
+
+    @enable_local_log_file.setter
+    def enable_local_log_file(self, value: bool) -> None:
+        self.__enable_local_log_file = value
+
+    @property
+    def global_log_file_name(self) -> str:
+        """Global PyAEDT log file path. The default is ``pyaedt_username.log``.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.global_log_file_name = r"C:\\Temp\\pyaedt.log"
+
+        """
+        return self.__global_log_file_name
+
+    @global_log_file_name.setter
+    def global_log_file_name(self, value: str) -> None:
+        if value is not None:
+            self.__global_log_file_name = value
+
+    @property
+    def enable_debug_methods_argument_logger(self) -> bool:
+        """Flag for whether to write out the method's arguments in the debug logger.
+
+        The default is ``False``.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.enable_debug_methods_argument_logger = True
+
+        """
+        return self.__enable_debug_methods_argument_logger
+
+    @enable_debug_methods_argument_logger.setter
+    def enable_debug_methods_argument_logger(self, val: bool) -> None:
+        self.__enable_debug_methods_argument_logger = val
+
+    @property
+    def enable_screen_logs(self) -> bool:
+        """Enable or disable the logging to STDOUT.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.enable_screen_logs = False
+
+        """
+        return self.__enable_screen_logs
+
+    @enable_screen_logs.setter
+    def enable_screen_logs(self, val: bool) -> None:
+        self.__enable_screen_logs = val
+
+    @property
+    def enable_file_logs(self) -> bool:
+        """Enable or disable the logging to a file.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.enable_file_logs = True
+
+        """
+        return self.__enable_file_logs
+
+    @enable_file_logs.setter
+    def enable_file_logs(self, val: bool) -> None:
+        self.__enable_file_logs = val
+
+    @property
+    def enable_logger(self) -> bool:
+        """Enable or disable the logging overall.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.enable_logger = True
+
+        """
+        return self.__enable_logger
+
+    @enable_logger.setter
+    def enable_logger(self, val: bool) -> None:
+        self.__enable_logger = val
+
+    @property
+    def logger_file_path(self) -> str | None:
+        """PyAEDT log file path.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.logger_file_path = r"C:\\Temp\\pyaedt.log"
+
+        """
+        return self.__logger_file_path
+
+    @logger_file_path.setter
+    def logger_file_path(self, val: str | None) -> None:
+        self.__logger_file_path = val
+
+    @property
+    def logger_formatter(self) -> str:
+        """Message format of the log entries.
+
+        The default is ``'%(asctime)s:%(destination)s:%(extra)s%(levelname)-8s:%(message)s'``.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.logger_formatter = "%(levelname)s:%(message)s"
+
+        """
+        return self.__logger_formatter
+
+    @logger_formatter.setter
+    def logger_formatter(self, val: str) -> None:
+        self.__logger_formatter = val
+
+    @property
+    def logger_datefmt(self) -> str:
+        """Date format of the log entries.
+
+        The default is ``'%Y/%m/%d %H.%M.%S'``
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.logger_datefmt = "%H:%M:%S"
+
+        """
+        return self.__logger_datefmt
+
+    @logger_datefmt.setter
+    def logger_datefmt(self, val: str) -> None:
+        self.__logger_datefmt = val
+
+    @property
+    def enable_debug_edb_logger(self) -> bool:
+        """Enable or disable the logger for any EDB API methods.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.enable_debug_edb_logger = True
+
+        """
+        return self.__enable_debug_edb_logger
+
+    @enable_debug_edb_logger.setter
+    def enable_debug_edb_logger(self, val: bool) -> None:
+        self.__enable_debug_edb_logger = val
+
+    @property
+    def enable_debug_grpc_api_logger(self) -> bool:
+        """Enable or disable the logging for the gRPC API calls.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.enable_debug_grpc_api_logger = True
+
+        """
+        return self.__enable_debug_grpc_api_logger
+
+    @enable_debug_grpc_api_logger.setter
+    def enable_debug_grpc_api_logger(self, val: bool) -> None:
+        self.__enable_debug_grpc_api_logger = val
+
+    @property
+    def enable_debug_geometry_operator_logger(self) -> bool:
+        """Enable or disable the logging for the geometry operators.
+
+        This setting is useful for debug purposes.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.enable_debug_geometry_operator_logger = True
+
+        """
+        return self.__enable_debug_geometry_operator_logger
+
+    @enable_debug_geometry_operator_logger.setter
+    def enable_debug_geometry_operator_logger(self, val: bool) -> None:
+        self.__enable_debug_geometry_operator_logger = val
+
+    @property
+    def enable_debug_internal_methods_logger(self) -> bool:
+        """Enable or disable the logging for internal methods.
+
+        This setting is useful for debug purposes.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.enable_debug_internal_methods_logger = True
+
+        """
+        return self.__enable_debug_internal_methods_logger
+
+    @enable_debug_internal_methods_logger.setter
+    def enable_debug_internal_methods_logger(self, val: bool) -> None:
+        self.__enable_debug_internal_methods_logger = val
+
+    @property
+    def enable_debug_logger(self) -> bool:
+        """Enable or disable the debug level logger.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.enable_debug_logger = True
+
+        """
+        return self.__enable_debug_logger
+
+    @enable_debug_logger.setter
+    def enable_debug_logger(self, val: bool) -> None:
+        self.__enable_debug_logger = val
+
+    @property
+    def aedt_log_file(self) -> str | None:
+        """Path to the AEDT log file.
+
+        Used to specify that Electronics Desktop has to be launched with ``-Logfile`` option.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.aedt_log_file = r"C:\\Temp\\aedt_launch.log"
+
+        """
+        return self.__aedt_log_file
+
+    @aedt_log_file.setter
+    def aedt_log_file(self, value: str) -> None:
+        self.__aedt_log_file = value
+
+    # ############################# LSF properties ############################
+
+    @property
+    def lsf_queue(self) -> str | None:
+        """LSF queue name.
+
+        This attribute is valid only on Linux systems running LSF Scheduler.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.lsf_queue = "research"
+
+        """
+        return self.__lsf_queue
+
+    @lsf_queue.setter
+    def lsf_queue(self, value: str) -> None:
+        self.__lsf_queue = value
+
+    @property
+    def use_lsf_scheduler(self) -> bool:
+        """Whether to use LSF Scheduler.
+
+        This attribute is valid only on Linux systems running LSF Scheduler.
+        When setting this property to ``True``, some gRPC properties are updated to align with the change.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.use_lsf_scheduler = True
+
+        """
+        return self.__use_lsf_scheduler
+
+    @use_lsf_scheduler.setter
+    def use_lsf_scheduler(self, value: bool) -> None:
+        if value:
+            self.__grpc_local = False
+
+            # Enable insecure mode when no certificates are defined
+            if not os.environ.get("ANSYS_GRPC_CERTIFICATES"):  # pragma: no cover
+                self.__grpc_secure_mode = False
+        self.__use_lsf_scheduler = value
+
+    @property
+    def lsf_aedt_command(self) -> str:
+        """Command to launch the task in the LSF Scheduler.
+
+        The default is ``"ansysedt"``.
+        This attribute is valid only on Linux systems running LSF Scheduler.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.lsf_aedt_command = "ansysedt"
+
+        """
+        return self.__lsf_aedt_command
+
+    @lsf_aedt_command.setter
+    def lsf_aedt_command(self, value: str) -> None:
+        self.__lsf_aedt_command = value
+
+    @property
+    def num_cores(self) -> int:
+        """Number cores to use with the scheduler.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.num_cores = 8
+
+        """
+        return self.__num_cores
+
+    @num_cores.setter
+    def num_cores(self, value: int) -> None:
+        self.__num_cores = int(value)
+
+    @property
+    def lsf_ram(self) -> int:
+        """RAM allocated for the LSF job.
+
+        This attribute is valid only on Linux systems running LSF Scheduler.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.lsf_ram = 4000
+
+        """
+        return self.__lsf_ram
+
+    @lsf_ram.setter
+    def lsf_ram(self, value: int) -> None:
+        self.__lsf_ram = int(value)
+
+    @property
+    def lsf_ui(self) -> int | None:
+        """Value passed in the LSF 'select' string to the ui resource.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.lsf_ui = 1
+
+        """
+        return self.__lsf_ui
+
+    @lsf_ui.setter
+    def lsf_ui(self, value: int) -> None:
+        if value is not None:
+            self.__lsf_ui = int(value)
+
+    @property
+    def lsf_timeout(self) -> int:
+        """Timeout in seconds for trying to start the interactive session. The default is ``3600`` seconds.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.lsf_timeout = 1800
+
+        """
+        return self.__lsf_timeout
+
+    @lsf_timeout.setter
+    def lsf_timeout(self, value: int) -> None:
+        self.__lsf_timeout = int(value)
+
+    @property
+    def lsf_osrel(self) -> str | None:
+        """Operating system string.
+        This attribute is valid only on Linux systems running LSF Scheduler.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.lsf_osrel = "ubuntu22.04"
+
+        """
+        return self.__lsf_osrel
+
+    @lsf_osrel.setter
+    def lsf_osrel(self, value: str) -> None:
+        self.__lsf_osrel = value
+
+    @property
+    def custom_lsf_command(self) -> str:
+        """Command to launch in the LSF Scheduler. The default is ``None``.
+        This attribute is valid only on Linux systems running LSF Scheduler.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.custom_lsf_command = "bsub -n 4"
+
+        """
+        return self.__custom_lsf_command
+
+    @custom_lsf_command.setter
+    def custom_lsf_command(self, value: str) -> None:
+        self.__custom_lsf_command = value
+
+    # ############################## Environment variable properties ##############################
+
+    @property
+    def aedt_environment_variables(self) -> dict:
+        """Environment variables that are set before launching a new AEDT session,
+        including those that enable the beta features.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.aedt_environment_variables = {"ANS_NODEPCHECK": "1"}
+
+        """
+        return self.__aedt_environment_variables
+
+    @aedt_environment_variables.setter
+    def aedt_environment_variables(self, value: dict) -> None:
+        self.__aedt_environment_variables = value
+
+    # ##################################### General properties ####################################
+
+    @property
+    def remote_api(self) -> bool:
+        """State whether remote API is used or not.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.remote_api = True
+
+        """
+        return self.__remote_api
+
+    @remote_api.setter
+    def remote_api(self, value: bool) -> None:
+        self.__remote_api = value
+
+    @property
+    def formatter(self) -> logging.Formatter | None:
+        """Get the formatter.
+
+        Examples
+        --------
+        >>> import logging
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.formatter = logging.Formatter("%(levelname)s:%(message)s")
+
+        """
+        return self.__formatter
+
+    @formatter.setter
+    def formatter(self, value: logging.Formatter | None) -> None:
+        self.__formatter = value
+
+    @property
+    def remote_rpc_session(self) -> Any | None:
+        """Get the RPyC connection.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.remote_rpc_session = None
+
+        """
+        return self.__remote_rpc_session
+
+    @remote_rpc_session.setter
+    def remote_rpc_session(self, value: Any | None) -> None:
+        self.__remote_rpc_session = value
+
+    @property
+    def remote_rpc_session_temp_folder(self) -> str:
+        """Get the remote RPyC session temp folder.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.remote_rpc_session_temp_folder = r"C:\\Temp\\pyaedt_rpc"
+
+        """
+        return self.__remote_rpc_session_temp_folder
+
+    @remote_rpc_session_temp_folder.setter
+    def remote_rpc_session_temp_folder(self, value: str) -> None:
+        self.__remote_rpc_session_temp_folder = value
+
+    @property
+    def remote_rpc_service_manager_port(self) -> int:
+        """Get the remote RPyC service manager port.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.remote_rpc_service_manager_port = 18000
+
+        """
+        return self.__remote_rpc_service_manager_port
+
+    @remote_rpc_service_manager_port.setter
+    def remote_rpc_service_manager_port(self, value: int) -> None:
+        self.__remote_rpc_service_manager_port = value
+
+    @property
+    def time_tick(self) -> float:
+        """Time in seconds since the 'epoch' as a floating-point number.
+
+        Examples
+        --------
+        >>> import time
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.time_tick = time.time()
+
+        """
+        return self.__time_tick
+
+    @time_tick.setter
+    def time_tick(self, value: float) -> None:
+        self.__time_tick = value
+
+    @property
+    def release_on_exception(self) -> bool:
+        """Enable or disable the release of AEDT on exception.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.release_on_exception = False
+
+        """
+        return self.__release_on_exception
+
+    @release_on_exception.setter
+    def release_on_exception(self, value: bool) -> None:
+        self.__release_on_exception = value
+
+    @property
+    def objects_lazy_load(self) -> bool:
+        """Flag for enabling and disabling the lazy load. The default value is ``True``.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.objects_lazy_load = True
+
+        """
+        return self.__objects_lazy_load
+
+    @objects_lazy_load.setter
+    def objects_lazy_load(self, value: bool) -> None:
+        self.__objects_lazy_load = value
+
+    @property
+    def lazy_load(self) -> bool:
+        """Flag for enabling and disabling the lazy load. The default value is ``True``.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.lazy_load = True
+
+        """
+        return self.__lazy_load
+
+    @lazy_load.setter
+    def lazy_load(self, value: bool) -> None:
+        self.__lazy_load = value
+
+    @property
+    def wait_for_license(self) -> bool:
+        """Enable or disable the use of the flag `-waitforlicense` when launching Electronic Desktop.
+
+        The default value is ``False``.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.wait_for_license = True
+
+        """
+        return self.__wait_for_license
+
+    @wait_for_license.setter
+    def wait_for_license(self, value: bool) -> None:
+        self.__wait_for_license = value
+
+    @property
+    def retry_n_times_time_interval(self) -> float:
+        """Time interval between the retries by the ``_retry_n_times`` method.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.retry_n_times_time_interval = 0.5
+
+        """
+        return self.__retry_n_times_time_interval
+
+    @retry_n_times_time_interval.setter
+    def retry_n_times_time_interval(self, value: float) -> None:
+        self.__retry_n_times_time_interval = float(value)
+
+    @property
+    def number_of_grpc_api_retries(self) -> int:
+        """Number of gRPC API retries. The default is ``3``.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.number_of_grpc_api_retries = 5
+
+        """
+        return self.__number_of_grpc_api_retries
+
+    @number_of_grpc_api_retries.setter
+    def number_of_grpc_api_retries(self, value: int) -> None:
+        self.__number_of_grpc_api_retries = int(value)
+
+    @property
+    def desktop_launch_timeout(self) -> int:
+        """Timeout in seconds for trying to launch AEDT. The default is ``120`` seconds.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.desktop_launch_timeout = 180
+
+        """
+        return self.__desktop_launch_timeout
+
+    @desktop_launch_timeout.setter
+    def desktop_launch_timeout(self, value: int) -> None:
+        self.__desktop_launch_timeout = int(value)
+
+    @property
+    def aedt_version(self) -> str | None:
+        """AEDT version in the form ``"2023.x"``.
+
+        In AEDT 2022 R2 and later, evaluating a bounding box by exporting a SAT file is disabled.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.aedt_version = "2026.1"
+
+        """
+        return self.__aedt_version
+
+    @aedt_version.setter
+    def aedt_version(self, value: str | None) -> None:
+        self.__aedt_version = value
+        if value is not None and value >= "2023.1":
+            self.disable_bounding_box_sat = True
+
+    @property
+    def use_multi_desktop(self) -> bool:
+        """Flag indicating if multiple desktop sessions are enabled in the same Python script.
+
+        Current limitations follow:
+        - Release without closing the desktop is not possible,
+        - The first desktop created must be the last to be closed.
+
+        Enabling multiple desktop sessions is a beta feature.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.use_multi_desktop = True
+
+        """
+        return self.__use_multi_desktop
+
+    @use_multi_desktop.setter
+    def use_multi_desktop(self, value: bool) -> None:
+        self.__use_multi_desktop = value
+
+    @property
+    def edb_dll_path(self) -> Path | None:
+        """Optional path for the EDB DLL file.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.edb_dll_path = r"C:\\Program Files\\AnsysEM\\v261\\Delcross\\Win64\\aedb.dll"
+
+        """
+        if self.__edb_dll_path is not None:
+            # If the optional path is set, return it
+            return Path(self.__edb_dll_path)
+        return None
+
+    @edb_dll_path.setter
+    def edb_dll_path(self, value: str | Path | None) -> None:
+        if value is not None:
+            dll_path = Path(value)
+            if dll_path.exists():
+                self.__edb_dll_path = dll_path
+
+    @property
+    def enable_pandas_output(self) -> bool:
+        """Flag for whether Pandas is being used to export dictionaries and lists.
+
+        This attribute applies to Solution data output.
+        The default is ``False``. If ``True``, the property or method returns a Pandas object.
+        This property is valid only in the CPython environment.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.enable_pandas_output = True
+
+        """
+        return self.__enable_pandas_output
+
+    @enable_pandas_output.setter
+    def enable_pandas_output(self, val: bool) -> None:
+        self.__enable_pandas_output = val
+
+    @property
+    def force_error_on_missing_project(self) -> bool:
+        """Flag for whether to check the project path.
+
+        The default is ``False``.
+        If ``True``, when passing a project path, the project has to exist.
+        Otherwise, an error is raised.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.force_error_on_missing_project = True
+
+        """
+        return self.__force_error_on_missing_project
+
+    @force_error_on_missing_project.setter
+    def force_error_on_missing_project(self, val: bool) -> None:
+        self.__force_error_on_missing_project = val
+
+    @property
+    def disable_bounding_box_sat(self) -> bool:
+        """Flag for enabling and disabling bounding box evaluation by exporting a SAT file.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.disable_bounding_box_sat = True
+
+        """
+        return self.__disable_bounding_box_sat
+
+    @disable_bounding_box_sat.setter
+    def disable_bounding_box_sat(self, val: bool) -> None:
+        self.__disable_bounding_box_sat = val
+
+    @property
+    def use_grpc_api(self) -> bool | None:
+        """Flag for whether to use the gRPC API or legacy COM object.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.use_grpc_api = True
+
+        """
+        return self.__use_grpc_api
+
+    @use_grpc_api.setter
+    def use_grpc_api(self, val: bool | None) -> None:
+        self.__use_grpc_api = val
+
+    @property
+    def enable_error_handler(self) -> bool:
+        """Flag for enabling and disabling the internal PyAEDT error handling.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.enable_error_handler = False
+
+        """
+        return self.__enable_error_handler
+
+    @enable_error_handler.setter
+    def enable_error_handler(self, val: bool) -> None:
+        self.__enable_error_handler = val
+
+    @property
+    def pyaedt_server_path(self) -> str:
+        """Get ``PYAEDT_SERVER_AEDT_PATH`` environment variable.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.pyaedt_server_path = r"C:\\Program Files\\AnsysEM\\v261\\Win64\\ansysedt.exe"
+
+        """
+        self.__pyaedt_server_path = os.getenv("PYAEDT_SERVER_AEDT_PATH", "")
+        return self.__pyaedt_server_path
+
+    # NOTE: Convenient way to set the environment variable for RPyC
+    @pyaedt_server_path.setter
+    def pyaedt_server_path(self, val: str) -> None:
+        os.environ["PYAEDT_SERVER_AEDT_PATH"] = str(val)
+        self.__pyaedt_server_path = os.environ["PYAEDT_SERVER_AEDT_PATH"]
+
+    @property
+    def skip_license_check(self) -> bool:
+        """Flag indicating whether to check for license availability when launching the Desktop.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.skip_license_check = True
+
+        """
+        return self.__skip_license_check
+
+    @skip_license_check.setter
+    def skip_license_check(self, value: bool) -> None:
+        self.__skip_license_check = value
+
+    @property
+    def use_local_example_data(self) -> bool:
+        """Methods in downloads.py will use the local examples folder if this is set.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.use_local_example_data = True
+
+        """
+        return self.__use_local_example_data
+
+    @use_local_example_data.setter
+    def use_local_example_data(self, value: bool) -> None:
+        self.__use_local_example_data = value
+
+    @property
+    def local_example_folder(self) -> str | None:
+        """Methods in downloads.py will use the local examples folder if this is set.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.local_example_folder = r"C:\\Temp\\PyAEDTExamples"
+
+        """
+        return self.__local_example_folder
+
+    @local_example_folder.setter
+    def local_example_folder(self, value: str | None) -> None:
+        self.__local_example_folder = value
+
+    @property
+    def pyd_libraries_path(self) -> Path:
+        """Path to pyd libraries."""
+        if self.__pyd_libraries_user_path is not None:
+            # If the user path is set, return it
+            return Path(self.__pyd_libraries_user_path)
+        return Path(self.__pyd_libraries_path)
+
+    @property
+    def pyd_libraries_user_path(self) -> Path | None:
+        """Path to pyd libraries user."""
+        # Get the user path for PyAEDT libraries.
+        if self.__pyd_libraries_user_path is not None:
+            return Path(self.__pyd_libraries_user_path)
+        return None
+
+    @pyd_libraries_user_path.setter
+    def pyd_libraries_user_path(self, val: Path | str | None) -> None:
+        if val is None:
+            # If the user path is None, set it to None
+            self.__pyd_libraries_user_path = None
+        else:
+            lib_path = Path(str(val))
+            if not lib_path.exists():
+                # If the user path does not exist, return None
+                raise ValueError("The user path for PyAEDT libraries does not exist. Please set a valid path.")
+            else:
+                # If the user path exists, set it as a Path object
+                self.__pyd_libraries_user_path = lib_path
+
+    # yaml setting file IO methods
+
+    def load_yaml_configuration(self, path: Path | str, raise_on_wrong_key: bool = False):
+        """Update default settings from a YAML configuration file.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.load_yaml_configuration(r"C:\\Temp\\pyaedt_settings.yaml")
+
+        """
+        import yaml
+
+        def filter_settings(settings: dict, allowed_keys: list[str]):
+            """Filter the items of settings based on a list of allowed keys."""
+            return filter(lambda item: item[0] in allowed_keys, settings.items())
+
+        def filter_settings_with_raise(settings: dict, allowed_keys: list[str]):
+            """Filter the items of settings based on a list of allowed keys."""
+            for key, value in settings.items():
+                if key not in allowed_keys:
+                    raise KeyError(f"Key '{key}' is not part of the allowed keys {allowed_keys}")
+                yield key, value
+
+        configuration_file = Path(path)
+        if configuration_file.exists():
+            with open(configuration_file, "r") as yaml_file:
+                local_settings = yaml.safe_load(yaml_file)
+            pairs = [
+                ("log", ALLOWED_LOG_SETTINGS),
+                ("lsf", ALLOWED_LSF_SETTINGS),
+                ("general", ALLOWED_GENERAL_SETTINGS),
+                ("grpc", ALLOWED_GRPC_SETTINGS),
+            ]
+            for setting_type, allowed_settings_key in pairs:
+                settings = local_settings.get(setting_type, {})
+                if raise_on_wrong_key:
+                    for key, value in filter_settings_with_raise(settings, allowed_settings_key):
+                        setattr(self, key, value)
+                else:
+                    for key, value in filter_settings(settings, allowed_settings_key):
+                        setattr(self, key, value)
+            # NOTE: Handle env var differently as they are loaded at once
+            setting_type = "aedt_env_var"
+            settings = local_settings.get(setting_type, {})
+            if settings:
+                if raise_on_wrong_key and any(key not in ALLOWED_AEDT_ENV_VAR_SETTINGS for key in settings.keys()):
+                    raise KeyError("An environment variable key is not part of the allowed keys.")
+                self.aedt_environment_variables = settings
+
+    def write_yaml_configuration(self, path: Path | str):
+        """Write the current settings into a YAML configuration file.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.generic.settings import settings
+        >>> settings.write_yaml_configuration(r"C:\\Temp\\pyaedt_settings.yaml")
+
+        """
+        import yaml
+
+        configuration_file = Path(path)
+
+        data = {}
+        data["log"] = {
+            key: str(value) if isinstance(value := getattr(self, key), Path) else value for key in ALLOWED_LOG_SETTINGS
+        }
+        data["lsf"] = {
+            key: str(value) if isinstance(value := getattr(self, key), Path) else value for key in ALLOWED_LSF_SETTINGS
+        }
+        data["aedt_env_var"] = getattr(self, "aedt_environment_variables")
+        data["general"] = {
+            key: str(value) if isinstance(value := getattr(self, key), Path) else value
+            for key in ALLOWED_GENERAL_SETTINGS
+        }
+        data["grpc"] = {
+            key: str(value) if isinstance(value := getattr(self, key), Path) else value for key in ALLOWED_GRPC_SETTINGS
+        }
+
+        with open(configuration_file, "w") as file:
+            yaml.safe_dump(data, file, sort_keys=False)
+
+
+settings = Settings()
+"""Value for settings."""
+inner_project_settings = _InnerProjectSettings()
+"""Value for inner project settings."""

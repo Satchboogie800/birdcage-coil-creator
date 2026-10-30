@@ -1,0 +1,2164 @@
+# -*- coding: utf-8 -*-
+#
+# Copyright (C) 2021 - 2026 Synopsys, Inc. and ANSYS, Inc. All rights reserved.
+# SPDX-License-Identifier: MIT
+#
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+from typing import TYPE_CHECKING
+
+from ansys.aedt.core.base import PyAedtBase
+from ansys.aedt.core.generic.general_methods import clamp
+from ansys.aedt.core.generic.general_methods import pyaedt_function_handler
+from ansys.aedt.core.generic.general_methods import rgb_color_codes
+from ansys.aedt.core.generic.general_methods import settings
+from ansys.aedt.core.generic.numbers_utils import _units_assignment
+from ansys.aedt.core.internal.errors import AEDTRuntimeError
+from ansys.aedt.core.modeler.geometry_operators import GeometryOperators
+
+if TYPE_CHECKING:
+    from ansys.aedt.core.modeler.cad.object_3d import Object3d
+
+
+class ModifiablePrimitive(PyAedtBase):
+    """Base class for geometric primitives that support modification operations.
+
+    Provides fillet and chamfer operations for:
+    - EdgePrimitive (3D designs only)
+    - VertexPrimitive (2D designs only)
+
+    Examples
+    --------
+    >>> from ansys.aedt.core.modeler.cad.elements_3d import ModifiablePrimitive
+    >>> obj = ModifiablePrimitive()
+
+    """
+
+    @pyaedt_function_handler()
+    def fillet(self, radius: float = 0.1, setback: float = 0.0) -> bool:
+        """Add a fillet to the selected edges in 3D/vertices in 2D.
+
+        Parameters
+        ----------
+        radius : float, optional
+            Radius of the fillet. The default is ``0.1``.
+        setback : float, optional
+            Setback value for the file. The default is ``0.0``.
+
+        Returns
+        -------
+        bool
+            ``True`` when successful, ``False`` when failed.
+
+        References
+        ----------
+        >>> oEditor.Fillet
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import ModifiablePrimitive
+        >>> obj = ModifiablePrimitive()
+        >>> obj.fillet(radius="10mm", setback=1.0)
+
+        """
+        edge_id_list = []
+        vertex_id_list = []
+
+        if isinstance(self, VertexPrimitive):
+            vertex_id_list = [self.id]
+        else:
+            if self._object3d.is_3d:
+                edge_id_list = [self.id]
+            else:
+                self._object3d.logger.error("Fillet is possible only on a vertex in 2D designs.")
+                return False
+
+        vArg1 = ["NAME:Selections", "Selections:=", self._object3d.name, "NewPartsModelFlag:=", "Model"]
+        vArg2 = ["NAME:FilletParameters"]
+        vArg2.append("Edges:="), vArg2.append(edge_id_list)
+        vArg2.append("Vertices:="), vArg2.append(vertex_id_list)
+        vArg2.append("Radius:="), vArg2.append(self._object3d._primitives._app.value_with_units(radius))
+        vArg2.append("Setback:="), vArg2.append(self._object3d._primitives._app.value_with_units(setback))
+        self._object3d._oeditor.Fillet(vArg1, ["NAME:Parameters", vArg2])
+        if self._object3d.name in list(self._object3d._oeditor.GetObjectsInGroup("UnClassified")):
+            self._object3d._primitives._odesign.Undo()
+            raise AEDTRuntimeError("Operation failed, generating an unclassified object. Check and retry.")
+        return True
+
+    @pyaedt_function_handler()
+    def chamfer(
+        self, left_distance: float = 1, right_distance: float | None = None, angle: float = 45, chamfer_type: int = 0
+    ) -> bool:
+        """Add a chamfer to the selected edges in 3D/vertices in 2D.
+
+        Parameters
+        ----------
+        left_distance : float, optional
+            Left distance from the edge. The default is ``1``.
+        right_distance : float, optional
+            Right distance from the edge. The default is ``None``.
+        angle : float, optional.
+            Angle value for chamfer types 2 and 3. The default is ``0``.
+        chamfer_type : int, optional
+            Type of the chamfer. Options are:
+                * 0 - Symmetric
+                * 1 - Left Distance-Right Distance
+                * 2 - Left Distance-Angle
+                * 3 - Right Distance-Angle
+
+            The default is ``0``.
+
+        Returns
+        -------
+        bool
+            ``True`` when successful, ``False`` when failed.
+
+        References
+        ----------
+        >>> oEditor.Chamfer
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import ModifiablePrimitive
+        >>> obj = ModifiablePrimitive()
+        >>> obj.chamfer(left_distance=1.0, right_distance=1.0)
+
+        """
+        edge_id_list = []
+        vertex_id_list = []
+
+        if isinstance(self, VertexPrimitive):
+            vertex_id_list = [self.id]
+        else:
+            if self._object3d.is_3d:
+                edge_id_list = [self.id]
+            else:
+                self._object3d.logger.error("chamfer is possible only on Vertex in 2D Designs ")
+                return False
+        vArg1 = ["NAME:Selections", "Selections:=", self._object3d.name, "NewPartsModelFlag:=", "Model"]
+        vArg2 = ["NAME:ChamferParameters"]
+        vArg2.append("Edges:="), vArg2.append(edge_id_list)
+        vArg2.append("Vertices:="), vArg2.append(vertex_id_list)
+        if right_distance is None:
+            right_distance = left_distance
+        if chamfer_type == 0:
+            if left_distance != right_distance:
+                self._object3d.logger.error(
+                    "Do not set right distance or ensure that left distance equals right distance."
+                )
+            (
+                vArg2.append("LeftDistance:="),
+                vArg2.append(self._object3d._primitives._app.value_with_units(left_distance)),
+            )
+            (
+                vArg2.append("RightDistance:="),
+                vArg2.append(self._object3d._primitives._app.value_with_units(right_distance)),
+            )
+            vArg2.append("ChamferType:="), vArg2.append("Symmetric")
+        elif chamfer_type == 1:
+            (
+                vArg2.append("LeftDistance:="),
+                vArg2.append(self._object3d._primitives._app.value_with_units(left_distance)),
+            )
+            (
+                vArg2.append("RightDistance:="),
+                vArg2.append(self._object3d._primitives._app.value_with_units(right_distance)),
+            )
+            vArg2.append("ChamferType:="), vArg2.append("Left Distance-Right Distance")
+        elif chamfer_type == 2:
+            (
+                vArg2.append("LeftDistance:="),
+                vArg2.append(self._object3d._primitives._app.value_with_units(left_distance)),
+            )
+            # NOTE: Seems like there is a bug in the API as Angle can't be used
+            vArg2.append("RightDistance:="), vArg2.append(f"{angle}deg")
+            vArg2.append("ChamferType:="), vArg2.append("Left Distance-Angle")
+        elif chamfer_type == 3:
+            # NOTE: Seems like there is a bug in the API as Angle can't be used
+            vArg2.append("LeftDistance:="), vArg2.append(f"{angle}deg")
+            (
+                vArg2.append("RightDistance:="),
+                vArg2.append(self._object3d._primitives._app.value_with_units(right_distance)),
+            )
+            vArg2.append("ChamferType:="), vArg2.append("Right Distance-Angle")
+        else:
+            self._object3d.logger.error("Wrong chamfer_type provided. Value must be an integer from 0 to 3.")
+            return False
+        self._object3d._oeditor.Chamfer(vArg1, ["NAME:Parameters", vArg2])
+        if self._object3d.name in list(self._object3d._oeditor.GetObjectsInGroup("UnClassified")):
+            self._object3d.odesign.Undo()
+            self._object3d.logger.error("Operation Failed generating Unclassified object. Check and retry")
+            return False
+        return True
+
+
+class VertexPrimitive(ModifiablePrimitive, PyAedtBase):
+    """Contains the vertex object within the AEDT Desktop Modeler.
+
+    Parameters
+    ----------
+    object3d : :class:`ansys.aedt.core.modeler.cad.object_3d.Object3d`
+        Pointer to the calling object that provides additional functionality.
+    objid : int
+        Object ID as determined by the parent object.
+
+    Examples
+    --------
+    >>> from ansys.aedt.core.modeler.cad.elements_3d import VertexPrimitive
+    >>> obj = VertexPrimitive()
+
+    """
+
+    def __init__(self, object3d, objid, position=None) -> None:
+        self.id = objid
+        self._object3d = object3d
+        self.oeditor = object3d._oeditor
+        self._position = position
+
+    @property
+    def name(self) -> str:
+        """Name of the object.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import VertexPrimitive
+        >>> obj = VertexPrimitive()
+        >>> obj.name
+
+        """
+        return self._object3d.name
+
+    @property
+    def position(self) -> list[float] | None:
+        """Position of the vertex.
+
+        Returns
+        -------
+        list of float values or ''None``
+            List of ``[x, y, z]`` coordinates of the vertex
+            in model units when the data from AEDT is valid, ``None``
+            otherwise.
+
+        References
+        ----------
+        >>> oEditor.GetVertexPosition
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import VertexPrimitive
+        >>> obj = VertexPrimitive()
+        >>> obj.position
+
+        """
+        if self._position:
+            return self._position
+        try:
+            vertex_data = list(self.oeditor.GetVertexPosition(self.id))
+            self._position = [float(i) for i in vertex_data]
+            return self._position
+        except Exception:
+            return None
+
+    def __str__(self) -> str:
+        return str(self.id)
+
+    def __repr__(self) -> str:
+        return str(self.id)
+
+
+class EdgePrimitive(ModifiablePrimitive, PyAedtBase):
+    """Contains the edge object within the AEDT Desktop Modeler.
+
+    Parameters
+    ----------
+    object3d : :class:`ansys.aedt.core.modeler.cad.object_3d.Object3d`
+        Pointer to the calling object that provides additional functionality.
+    edge_id : int
+        Object ID as determined by the parent object.
+
+    Examples
+    --------
+    >>> from ansys.aedt.core.modeler.cad.elements_3d import EdgePrimitive
+    >>> obj = EdgePrimitive()
+
+    """
+
+    def __init__(self, object3d, edge_id) -> None:
+        self.id = edge_id
+        self._object3d = object3d
+        self.oeditor = object3d._oeditor
+
+    def __str__(self) -> str:
+        return str(self.id)
+
+    def __repr__(self) -> str:
+        return str(self.id)
+
+    def __iter__(self):
+        """Return an iterator for the vertices of the edge.
+
+        Returns
+        -------
+        iterator
+            Iterator over the vertices of the edge.
+
+        Examples
+        --------
+        >>> for vertex in edge:
+        ...     print(f"Vertex ID: {vertex.id}, Position: {vertex.position}")
+
+        """
+        return iter(self.vertices)
+
+    def __getitem__(self, index):
+        """Get a vertex by index.
+
+        Parameters
+        ----------
+        index : int
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modeler.cad.elements_3d.VertexPrimitive`
+            Vertex at the specified index.
+
+        Examples
+        --------
+        >>> first_vertex = edge[0]
+        >>> last_vertex = edge[-1]
+
+        """
+        return self.vertices[index]
+
+    def __contains__(self, item: int | VertexPrimitive) -> bool:
+        """Check if a vertex is contained in the edge.
+
+        Parameters
+        ----------
+        item : :class:`ansys.aedt.core.modeler.cad.elements_3d.VertexPrimitive` or int
+            Vertex object or vertex ID to check for containment.
+
+        Returns
+        -------
+        bool
+            ``True`` if the item is part of this edge, ``False`` otherwise.
+
+        Examples
+        --------
+        >>> edge = obj.edges[0]
+        >>> vertex = obj.vertices[0]
+        >>> if vertex in edge:
+        ...     print("Vertex is part of this edge")
+
+        >>> # Check by vertex ID
+        >>> vertex_id = 123
+        >>> if vertex_id in edge:
+        ...     print("Vertex ID is part of this edge")
+
+        """
+        if isinstance(item, VertexPrimitive):
+            item_id = item.id
+            return any(v.id == item_id for v in self)
+        elif isinstance(item, int):
+            return any(v.id == item for v in self)
+        return False
+
+    @property
+    def name(self) -> str:
+        """Name of the object.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import EdgePrimitive
+        >>> obj = EdgePrimitive()
+        >>> obj.name
+
+        """
+        return self._object3d.name
+
+    @property
+    def segment_info(self) -> dict:
+        """Compute segment information using the object-oriented method (from AEDT 2021 R2
+        with beta options).
+
+        The method manages segment info for lines, circles and ellipse
+        providing information about all of those.
+
+        Returns
+        -------
+            list
+                Segment info if available.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import EdgePrimitive
+        >>> obj = EdgePrimitive()
+        >>> obj.segment_info
+
+        """
+        autosave = self._object3d._primitives._app.odesktop.GetAutosaveEnabled()
+        try:
+            self.oeditor.GetChildNames()
+        except Exception:  # pragma: no cover
+            return {}
+        self._object3d._primitives._app.autosave_disable()
+        ll = list(self.oeditor.GetObjectsInGroup("Lines"))
+        self.oeditor.CreateObjectFromEdges(
+            ["NAME:Selections", "Selections:=", self._object3d.name, "NewPartsModelFlag:=", "NonModel"],
+            ["NAME:Parameters", ["NAME:BodyFromEdgeToParameters", "Edges:=", [self.id]]],
+            ["CreateGroupsForNewObjects:=", False],
+        )
+        new_line = [i for i in list(self.oeditor.GetObjectsInGroup("Lines")) if i not in ll]
+        self.oeditor.GenerateHistory(
+            ["NAME:Selections", "Selections:=", new_line[0], "NewPartsModelFlag:=", "NonModel", "UseCurrentCS:=", True]
+        )
+        oo = self.oeditor.GetChildObject(new_line[0])
+        segment = {}
+        if len(self.vertices) == 2:
+            oo1 = oo.GetChildObject(oo.GetChildNames()[0]).GetChildObject("Segment0")
+        else:
+            oo1 = oo.GetChildObject(oo.GetChildNames()[0])
+        for prop in oo1.GetPropNames():
+            if "/" not in prop:
+                val = oo1.GetPropValue(prop)
+                if "X:=" in val and len(val) == 6:
+                    segment[prop] = [val[1], val[3], val[5]]
+                else:
+                    segment[prop] = val
+        self._object3d._primitives._odesign.Undo()
+        self._object3d._primitives._odesign.Undo()
+        self._object3d._primitives._app.odesktop.EnableAutoSave(True if autosave else False)
+        return segment
+
+    @property
+    def vertices(self) -> list["VertexPrimitive"]:
+        """Vertices list.
+
+        Returns
+        -------
+        list[:class:`ansys.aedt.core.modeler.cad.elements_3d.VertexPrimitive`]
+            List of vertices.
+
+        References
+        ----------
+        >>> oEditor.GetVertexIDsFromEdge
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import EdgePrimitive
+        >>> obj = EdgePrimitive()
+        >>> obj.vertices
+
+        """
+        vertices = []
+        v = [i for i in self.oeditor.GetVertexIDsFromEdge(self.id)]
+        if not v:
+            pos = [float(p) for p in self.oeditor.GetEdgePositionAtNormalizedParameter(self.id, 0)]
+            vertices.append(VertexPrimitive(self._object3d, -1, pos))
+        if settings.aedt_version > "2022.2":
+            v = v[::-1]
+        for vertex in v:
+            vertex = int(vertex)
+            vertices.append(VertexPrimitive(self._object3d, vertex))
+        return vertices
+
+    @property
+    def midpoint(self) -> list[float] | None:
+        """Midpoint coordinates of the edge.
+
+        Returns
+        -------
+        list of float values or ``None``
+            Midpoint in ``[x, y, z]`` coordinates when the edge
+            is a circle with only one vertex, ``None`` otherwise.
+
+        References
+        ----------
+        >>> oEditor.GetVertexPosition
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import EdgePrimitive
+        >>> obj = EdgePrimitive()
+        >>> obj.midpoint
+
+        """
+        return [float(i) for i in self.oeditor.GetEdgePositionAtNormalizedParameter(self.id, 0.5)]
+
+    @property
+    def length(self) -> float | bool:
+        """Length of the edge.
+
+        Returns
+        -------
+        float or bool
+            Edge length in model units when edge has two vertices, ``False`` otherwise.
+
+        References
+        ----------
+        >>> oEditor.GetEdgeLength
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import EdgePrimitive
+        >>> obj = EdgePrimitive()
+        >>> obj.length
+
+        """
+        try:
+            return float(self.oeditor.GetEdgeLength(self.id))
+        except Exception:
+            return False
+
+    @pyaedt_function_handler()
+    def create_object(self, non_model: bool = False) -> "Object3d":
+        """Return a new object from the selected edge.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modeler.cad.object_3d.Object3d`
+            3D object.
+        non_model : bool, optional
+            Either if create the new object as model or non-model. The default is `False`.
+
+        References
+        ----------
+        >>> oEditor.CreateObjectFromEdges
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import EdgePrimitive
+        >>> obj = EdgePrimitive()
+        >>> obj.create_object(non_model=True)
+
+        """
+        return self._object3d._primitives.create_object_from_edge(self, non_model)
+
+    @pyaedt_function_handler()
+    def move_along_normal(self, offset: float = 1.0) -> bool:
+        """Move this edge.
+
+        This method moves an edge which belong to the same solid.
+
+        Parameters
+        ----------
+        offset : float, optional
+             Offset to apply in model units. The default is ``1.0``.
+
+        Returns
+        -------
+        bool
+            ``True`` when successful, ``False`` when failed.
+
+        References
+        ----------
+        >>> oEditor.MoveEdges
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import EdgePrimitive
+        >>> obj = EdgePrimitive()
+        >>> obj.move_along_normal(offset="1mm")
+
+        """
+        if self._object3d.object_type == "Solid":
+            self._object3d.logger.error("Edge Movement applies only to 2D objects.")
+            return False
+        return self._object3d._primitives.move_edge(self, offset)
+
+    @pyaedt_function_handler()
+    def fillet(self, radius: float = 0.1, setback: float = 0.0) -> bool:
+        """Add a fillet to the selected edges in 3D/vertices in 2D.
+
+        Parameters
+        ----------
+        radius : float, optional
+            Radius of the fillet. The default is ``0.1``.
+        setback : float, optional
+            Setback value for the file. The default is ``0.0``.
+
+        Returns
+        -------
+        bool
+            ``True`` when successful, ``False`` when failed.
+
+        References
+        ----------
+        >>> oEditor.Fillet
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import EdgePrimitive
+        >>> obj = EdgePrimitive()
+        >>> obj.fillet(radius="10mm", setback=1.0)
+
+        """
+        edge_id_list = []
+        vertex_id_list = []
+
+        if isinstance(self, VertexPrimitive):
+            vertex_id_list = [self.id]
+        else:
+            if self._object3d.is_3d:
+                edge_id_list = [self.id]
+            else:
+                raise AEDTRuntimeError("Fillet is possible only on a vertex in 2D designs.")
+
+        vArg1 = ["NAME:Selections", "Selections:=", self._object3d.name, "NewPartsModelFlag:=", "Model"]
+        vArg2 = ["NAME:FilletParameters"]
+        vArg2.append("Edges:="), vArg2.append(edge_id_list)
+        vArg2.append("Vertices:="), vArg2.append(vertex_id_list)
+        vArg2.append("Radius:="), vArg2.append(self._object3d._primitives._app.value_with_units(radius))
+        vArg2.append("Setback:="), vArg2.append(self._object3d._primitives._app.value_with_units(setback))
+        self._object3d._oeditor.Fillet(vArg1, ["NAME:Parameters", vArg2])
+        if self._object3d.name in list(self._object3d._oeditor.GetObjectsInGroup("UnClassified")):
+            self._object3d._primitives._odesign.Undo()
+            raise AEDTRuntimeError("Operation failed, generating an unclassified object. Check and retry.")
+        return True
+
+    @pyaedt_function_handler()
+    def chamfer(
+        self, left_distance: float = 1.0, right_distance: float = None, angle: float = 45.0, chamfer_type: int = 0
+    ) -> bool:
+        """Add a chamfer to the selected edges in 3D/vertices in 2D.
+
+        Parameters
+        ----------
+        left_distance : float, optional
+            Left distance from the edge. The default is ``1``.
+        right_distance : float, optional
+            Right distance from the edge. The default is ``None``.
+        angle : float, optional.
+            Angle value for chamfer types 2 and 3. The default is ``0``.
+        chamfer_type : int, optional
+            Type of the chamfer. Options are:
+                * 0 - Symmetric
+                * 1 - Left Distance-Right Distance
+                * 2 - Left Distance-Angle
+                * 3 - Right Distance-Angle
+
+            The default is ``0``.
+
+        Returns
+        -------
+        bool
+            ``True`` when successful, ``False`` when failed.
+
+        References
+        ----------
+        >>> oEditor.Chamfer
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import EdgePrimitive
+        >>> obj = EdgePrimitive()
+        >>> obj.chamfer(left_distance=1.0, right_distance=1.0)
+
+        """
+        edge_id_list = []
+        vertex_id_list = []
+
+        if isinstance(self, VertexPrimitive):
+            vertex_id_list = [self.id]
+        else:
+            if self._object3d.is_3d:
+                edge_id_list = [self.id]
+            else:
+                self._object3d.logger.error("chamfer is possible only on Vertex in 2D Designs ")
+                return False
+        vArg1 = ["NAME:Selections", "Selections:=", self._object3d.name, "NewPartsModelFlag:=", "Model"]
+        vArg2 = ["NAME:ChamferParameters"]
+        vArg2.append("Edges:="), vArg2.append(edge_id_list)
+        vArg2.append("Vertices:="), vArg2.append(vertex_id_list)
+        if right_distance is None:
+            right_distance = left_distance
+        if chamfer_type == 0:
+            if left_distance != right_distance:
+                self._object3d.logger.error(
+                    "Do not set right distance or ensure that left distance equals right distance."
+                )
+            (
+                vArg2.append("LeftDistance:="),
+                vArg2.append(self._object3d._primitives._app.value_with_units(left_distance)),
+            )
+            (
+                vArg2.append("RightDistance:="),
+                vArg2.append(self._object3d._primitives._app.value_with_units(right_distance)),
+            )
+            vArg2.append("ChamferType:="), vArg2.append("Symmetric")
+        elif chamfer_type == 1:
+            (
+                vArg2.append("LeftDistance:="),
+                vArg2.append(self._object3d._primitives._app.value_with_units(left_distance)),
+            )
+            (
+                vArg2.append("RightDistance:="),
+                vArg2.append(self._object3d._primitives._app.value_with_units(right_distance)),
+            )
+            vArg2.append("ChamferType:="), vArg2.append("Left Distance-Right Distance")
+        elif chamfer_type == 2:
+            (
+                vArg2.append("LeftDistance:="),
+                vArg2.append(self._object3d._primitives._app.value_with_units(left_distance)),
+            )
+            # NOTE: Seems like there is a bug in the API as Angle can't be used
+            vArg2.append("RightDistance:="), vArg2.append(f"{angle}deg")
+            vArg2.append("ChamferType:="), vArg2.append("Left Distance-Angle")
+        elif chamfer_type == 3:
+            # NOTE: Seems like there is a bug in the API as Angle can't be used
+            vArg2.append("LeftDistance:="), vArg2.append(f"{angle}deg")
+            (
+                vArg2.append("RightDistance:="),
+                vArg2.append(self._object3d._primitives._app.value_with_units(right_distance)),
+            )
+            vArg2.append("ChamferType:="), vArg2.append("Right Distance-Angle")
+        else:
+            self._object3d.logger.error("Wrong chamfer_type provided. Value must be an integer from 0 to 3.")
+            return False
+        self._object3d._oeditor.Chamfer(vArg1, ["NAME:Parameters", vArg2])
+        if self._object3d.name in list(self._object3d._oeditor.GetObjectsInGroup("UnClassified")):
+            self._object3d.odesign.Undo()
+            self._object3d.logger.error("Operation Failed generating Unclassified object. Check and retry")
+            return False
+        return True
+
+
+class FacePrimitive(PyAedtBase):
+    """Contains the face object within the AEDT Desktop Modeler.
+
+    Parameters
+    ----------
+        object3d : :class:`ansys.aedt.core.modeler.cad.object_3d.Object3d`
+        obj_id : int
+
+    Examples
+    --------
+    >>> from ansys.aedt.core.modeler.cad.elements_3d import FacePrimitive
+    >>> obj = FacePrimitive()
+
+    """
+
+    def __str__(self) -> str:
+        return str(self.id)
+
+    def __repr__(self) -> str:
+        return str(self.id)
+
+    def __init__(self, object3d, obj_id) -> None:
+        self._id = obj_id
+        self._object3d = object3d
+        self._is_planar = None
+
+    @property
+    def name(self) -> str:
+        """Name of the object.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import FacePrimitive
+        >>> obj = FacePrimitive()
+        >>> obj.name
+
+        """
+        return self._object3d.name
+
+    @property
+    def oeditor(self):
+        """Oeditor Module.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import FacePrimitive
+        >>> obj = FacePrimitive()
+        >>> obj.oeditor
+
+        """
+        return self._object3d._oeditor
+
+    @property
+    def logger(self):
+        """Logger.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import FacePrimitive
+        >>> obj = FacePrimitive()
+        >>> obj.logger
+
+        """
+        return self._object3d.logger
+
+    @property
+    def _units(self) -> str:
+        return self._object3d.object_units
+
+    @property
+    def touching_objects(self) -> list[str]:
+        """Get the objects that touch one of the vertex, edge midpoint or the actual face.
+
+        Returns
+        -------
+        list
+            Object names touching that face.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import FacePrimitive
+        >>> obj = FacePrimitive()
+        >>> obj.touching_objects
+
+        """
+        list_names = []
+        for vertex in self.vertices:
+            body_names = self._object3d._primitives.get_bodynames_from_position(
+                vertex.position, include_non_model=False
+            )
+            a = [i for i in body_names if i != self._object3d.name and i not in list_names]
+            if a:
+                list_names.extend(a)
+        for edge in self.edges:
+            body_names = self._object3d._primitives.get_bodynames_from_position(edge.midpoint, include_non_model=False)
+            a = [i for i in body_names if i != self._object3d.name and i not in list_names]
+            if a:
+                list_names.extend(a)
+        body_names = self._object3d._primitives.get_bodynames_from_position(self.center, include_non_model=False)
+        a = [i for i in body_names if i != self._object3d.name and i not in list_names]
+        if a:
+            list_names.extend(a)
+        return list_names
+
+    @property
+    def edges(self) -> list["EdgePrimitive"]:
+        """Edges lists.
+
+        Returns
+        -------
+        list[:class:`ansys.aedt.core.modeler.cad.elements_3d.EdgePrimitive`]
+            List of Edges.
+
+        References
+        ----------
+        >>> oEditor.GetEdgeIDsFromFace
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import FacePrimitive
+        >>> obj = FacePrimitive()
+        >>> obj.edges
+
+        """
+        edges = []
+        for edge in list(self.oeditor.GetEdgeIDsFromFace(self.id)):
+            edges.append(EdgePrimitive(self._object3d, int(edge)))
+        return edges
+
+    @property
+    def vertices(self) -> list["VertexPrimitive"]:
+        """Vertices lists.
+
+        Returns
+        -------
+        list[:class:`ansys.aedt.core.modeler.cad.elements_3d.VertexPrimitive`]
+            List of Vertices.
+
+        References
+        ----------
+        >>> oEditor.GetVertexIDsFromFace
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import FacePrimitive
+        >>> obj = FacePrimitive()
+        >>> obj.vertices
+
+        """
+        vertices = []
+        try:
+            v = [i for i in self.oeditor.GetVertexIDsFromFace(self.id)]
+        except Exception:
+            v = []
+        if not v:
+            for el in self.edges:
+                pos = [float(p) for p in self.oeditor.GetEdgePositionAtNormalizedParameter(el.id, 0)]
+                vertices.append(VertexPrimitive(self._object3d, -1, pos))
+        if settings.aedt_version > "2022.2":
+            v = v[::-1]
+        for vertex in v:
+            vertex = int(vertex)
+            vertices.append(VertexPrimitive(self._object3d, int(vertex)))
+        return vertices
+
+    @property
+    def id(self) -> int:
+        """Face ID.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import FacePrimitive
+        >>> obj = FacePrimitive()
+        >>> obj.id
+
+        """
+        return self._id
+
+    @property
+    def center_from_aedt(self) -> list[float] | bool:
+        """Face center for a planar face in model units.
+
+        Returns
+        -------
+        list or bool
+            Center position in ``[x, y, z]`` coordinates for the planar face, ``False`` otherwise.
+
+        References
+        ----------
+        >>> oEditor.GetFaceCenter
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import FacePrimitive
+        >>> obj = FacePrimitive()
+        >>> obj.center_from_aedt
+
+        """
+        try:
+            c = self.oeditor.GetFaceCenter(self.id)
+        except Exception:
+            self.logger.warning("Non-planar face does not provide a face center.")
+            return False
+        center = [float(i) for i in c]
+        return center
+
+    @property
+    def is_planar(self) -> bool:
+        """Check if a face is planar or not.
+
+        Returns
+        -------
+        bool
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import FacePrimitive
+        >>> obj = FacePrimitive()
+        >>> obj.is_planar
+
+        """
+        if self._is_planar is not None:
+            return self._is_planar
+        try:
+            self.oeditor.GetFaceCenter(self.id)
+            self._is_planar = True
+            return True
+        except Exception:
+            if self.logger and hasattr(self.logger, "clear_messages"):
+                self.logger.clear_messages()
+            self._is_planar = False
+            return False
+
+    @property
+    def center(self) -> list[float] | bool:
+        """Face center in model units.
+
+        .. note::
+           It returns the face center from AEDT.
+           It falls back to get the face centroid if number of face vertices is >1.
+           For curved faces returns a point on the surface even if it is
+           not properly the center of mass.
+
+        Returns
+        -------
+        list of float values
+            Centroid of all vertices of the face.
+
+        References
+        ----------
+        >>> oEditor.GetFaceCenter
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import FacePrimitive
+        >>> obj = FacePrimitive()
+        >>> obj.center
+
+        """
+        if self.is_planar:
+            return [float(i) for i in self.oeditor.GetFaceCenter(self.id)]
+        else:  # pragma: no cover
+            # self.logger.clear_messages()
+            vtx = self.vertices[:]
+            if len(vtx) > 1:
+                return GeometryOperators.get_polygon_centroid([pos.position for pos in vtx])
+            elif len(vtx) <= 1:
+                eval_points = 4
+                try:
+                    edge = self.edges[0]
+                except IndexError:
+                    # self.logger.error("At least one edge is needed to compute face center.")
+                    return
+                centroid = GeometryOperators.get_polygon_centroid(
+                    [
+                        [
+                            float(i)
+                            for i in self.oeditor.GetEdgePositionAtNormalizedParameter(
+                                edge.id, float(pos) / eval_points
+                            )
+                        ]
+                        for pos in range(0, eval_points)
+                    ]
+                )
+                return centroid
+
+    @property
+    def area(self) -> float:
+        """Face area.
+
+        Returns
+        -------
+        float
+            Face area in model units.
+
+        References
+        ----------
+        >>> oEditor.GetFaceArea
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import FacePrimitive
+        >>> obj = FacePrimitive()
+        >>> obj.area
+
+        """
+        area = self.oeditor.GetFaceArea(self.id)
+        return area
+
+    @property
+    def top_edge_z(self) -> "EdgePrimitive":
+        """Top edge in the Z direction of the object. Midpoint is used as criteria to find the edge.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modeler.cad.elements_3d.EdgePrimitive`
+
+        References
+        ----------
+        >>> oEditor.FaceCenter
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import FacePrimitive
+        >>> obj = FacePrimitive()
+        >>> obj.top_edge_z
+
+        """
+        try:
+            result = [(float(edge.midpoint[2]), edge) for edge in self.edges]
+            result = sorted(result, key=lambda tup: tup[0])
+            return result[-1][1]
+        except Exception:
+            return None
+
+    @property
+    def bottom_edge_z(self) -> "EdgePrimitive":
+        """Bottom edge in the Z direction of the object. Midpoint is used as criteria to find the edge.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modeler.cad.elements_3d.EdgePrimitive`
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import FacePrimitive
+        >>> obj = FacePrimitive()
+        >>> obj.bottom_edge_z
+
+        """
+        try:
+            result = [(float(edge.midpoint[2]), edge) for edge in self.edges]
+            result = sorted(result, key=lambda tup: tup[0])
+            return result[0][1]
+        except Exception:
+            return None
+
+    @property
+    def top_edge_x(self) -> "EdgePrimitive":
+        """Top edge in the X direction of the object. Midpoint is used as criteria to find the edge.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modeler.cad.elements_3d.EdgePrimitive`
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import FacePrimitive
+        >>> obj = FacePrimitive()
+        >>> obj.top_edge_x
+
+        """
+        try:
+            result = [(float(edge.midpoint[0]), edge) for edge in self.edges]
+            result = sorted(result, key=lambda tup: tup[0])
+            return result[-1][1]
+        except Exception:
+            return None
+
+    @property
+    def bottom_edge_x(self) -> "EdgePrimitive":
+        """Bottom edge in the X direction of the object. Midpoint is used as criteria to find the edge.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modeler.cad.elements_3d.EdgePrimitive`
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import FacePrimitive
+        >>> obj = FacePrimitive()
+        >>> obj.bottom_edge_x
+
+        """
+        try:
+            result = [(float(edge.midpoint[0]), edge) for edge in self.edges]
+            result = sorted(result, key=lambda tup: tup[0])
+            return result[0][1]
+        except Exception:
+            return None
+
+    @property
+    def top_edge_y(self) -> "EdgePrimitive":
+        """Top edge in the Y direction of the object. Midpoint is used as criteria to find the edge.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modeler.cad.elements_3d.EdgePrimitive`
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import FacePrimitive
+        >>> obj = FacePrimitive()
+        >>> obj.top_edge_y
+
+        """
+        try:
+            result = [(float(edge.midpoint[1]), edge) for edge in self.edges]
+            result = sorted(result, key=lambda tup: tup[0])
+            return result[-1][1]
+        except Exception:
+            return None
+
+    @property
+    def bottom_edge_y(self) -> "EdgePrimitive":
+        """Bottom edge in the X direction of the object. Midpoint is used as criteria to find the edge.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modeler.cad.elements_3d.EdgePrimitive`
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import FacePrimitive
+        >>> obj = FacePrimitive()
+        >>> obj.bottom_edge_y
+
+        """
+        try:
+            result = [(float(edge.midpoint[1]), edge) for edge in self.edges]
+            result = sorted(result, key=lambda tup: tup[0])
+            return result[0][1]
+        except Exception:
+            return None
+
+    @pyaedt_function_handler()
+    def is_on_bounding(self, tolerance: float = 1e-9) -> bool:
+        """Check if the face is on bounding box or Not.
+
+        Parameters
+        ----------
+        tolerance : float, optional
+            Tolerance of check between face center and bounding box.
+
+        Returns
+        -------
+        bool
+            `True` if the face is on bounding box. `False` otherwise.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import FacePrimitive
+        >>> obj = FacePrimitive()
+        >>> obj.is_on_bounding(tolerance=1.0)
+
+        """
+        b = [float(i) for i in list(self.oeditor.GetModelBoundingBox())]
+        c = self.center
+        if c and (
+            abs(c[0] - b[0]) < tolerance
+            or abs(c[1] - b[1]) < tolerance
+            or abs(c[2] - b[2]) < tolerance
+            or abs(c[0] - b[3]) < tolerance
+            or abs(c[1] - b[4]) < tolerance
+            or abs(c[2] - b[5]) < tolerance
+        ):
+            return True
+        return False
+
+    @pyaedt_function_handler()
+    def move_with_offset(self, offset: float = 1.0) -> bool:
+        """Move the face along the normal.
+
+        Parameters
+        ----------
+        offset : float, optional
+            Offset to apply in model units. The default is ``1.0``.
+
+        Returns
+        -------
+        bool
+            ``True`` when successful, ``False`` when failed.
+
+        References
+        ----------
+        >>> oEditor.MoveFaces
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import FacePrimitive
+        >>> obj = FacePrimitive()
+        >>> obj.move_with_offset(offset="1mm")
+
+        """
+        self.oeditor.MoveFaces(
+            ["NAME:Selections", "Selections:=", self._object3d.name, "NewPartsModelFlag:=", "Model"],
+            [
+                "NAME:Parameters",
+                [
+                    "NAME:MoveFacesParameters",
+                    "MoveAlongNormalFlag:=",
+                    True,
+                    "OffsetDistance:=",
+                    self._object3d._primitives._app.value_with_units(offset, self._object3d.object_units),
+                    "MoveVectorX:=",
+                    "0mm",
+                    "MoveVectorY:=",
+                    "0mm",
+                    "MoveVectorZ:=",
+                    "0mm",
+                    "FacesToMove:=",
+                    [self.id],
+                ],
+            ],
+        )
+        return True
+
+    @pyaedt_function_handler()
+    def move_with_vector(self, vector: list[float]) -> bool:
+        """Move the face along a vector.
+
+        Parameters
+        ----------
+        vector : list
+            List of ``[x, y, z]`` coordinates for the vector.
+
+        Returns
+        -------
+        bool
+            ``True`` when successful, ``False`` when failed.
+
+        References
+        ----------
+        >>> oEditor.MoveFaces
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import FacePrimitive
+        >>> obj = FacePrimitive()
+        >>> obj.move_with_vector(vector=[1, 0, 0])
+
+        """
+        self.oeditor.MoveFaces(
+            ["NAME:Selections", "Selections:=", self._object3d.name, "NewPartsModelFlag:=", "Model"],
+            [
+                "NAME:Parameters",
+                [
+                    "NAME:MoveFacesParameters",
+                    "MoveAlongNormalFlag:=",
+                    False,
+                    "OffsetDistance:=",
+                    "0mm",
+                    "MoveVectorX:=",
+                    self._object3d._primitives._app.value_with_units(vector[0], self._object3d.object_units),
+                    "MoveVectorY:=",
+                    self._object3d._primitives._app.value_with_units(vector[1], self._object3d.object_units),
+                    "MoveVectorZ:=",
+                    self._object3d._primitives._app.value_with_units(vector[2], self._object3d.object_units),
+                    "FacesToMove:=",
+                    [self.id],
+                ],
+            ],
+        )
+        return True
+
+    @property
+    def normal(self) -> list[float] | None:
+        """Face normal.
+
+        Limitations:
+        #. The face must be planar.
+        #. Currently it works only if the face has at least two vertices. Notable excluded items are circles and
+        ellipses that have only one vertex.
+        #. If a bounding box is specified, the normal is orientated outwards with respect to the bounding box.
+        Usually the bounding box refers to a volume where the face lies.
+        If no bounding box is specified, the normal can be inward or outward the volume.
+
+        Returns
+        -------
+        list of float values or ``None``
+            Normal vector (normalized ``[x, y, z]`` coordinates) or ``None``.
+
+        References
+        ----------
+        >>> oEditor.GetVertexPosition
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import FacePrimitive
+        >>> obj = FacePrimitive()
+        >>> obj.normal
+
+        """
+        vertices_ids = self.vertices
+        if len(vertices_ids) < 2 or not self.center:
+            self._object3d.logger.warning("Not enough vertices or non-planar face")
+            return None
+        # elif len(vertices_ids)<2:
+        #     v1 = vertices_ids[0].position
+        #     offset = [(a-b)/2 for a,b in zip(v1,self.center)]
+        #     v2 = [a+b for a,b in zip(self.center, offset)]
+        else:
+            v1 = vertices_ids[0].position
+            v2 = vertices_ids[1].position
+        fc = self.center
+        cv1 = GeometryOperators.v_points(fc, v1)
+        cv2 = GeometryOperators.v_points(fc, v2)
+        if cv2[0] == cv1[0] == 0.0 and cv2[1] == cv1[1] == 0.0:
+            n = [0, 0, 1]
+        elif cv2[0] == cv1[0] == 0.0 and cv2[2] == cv1[2] == 0.0:
+            n = [0, 1, 0]
+        elif cv2[1] == cv1[1] == 0.0 and cv2[2] == cv1[2] == 0.0:
+            n = [1, 0, 0]
+        else:
+            n = GeometryOperators.v_cross(cv1, cv2)
+        normal = GeometryOperators.normalize_vector(n)
+
+        # Try to move the face center twice, the first with the normal vector, and the second with its inverse.
+        # Measures which is closer to the center point of the bounding box.
+        inv_norm = [-i for i in normal]
+        mv1 = GeometryOperators.v_sum(fc, normal)
+        mv2 = GeometryOperators.v_sum(fc, inv_norm)
+        bb_center = GeometryOperators.get_mid_point(self._object3d.bounding_box[0:3], self._object3d.bounding_box[3:6])
+        d1 = GeometryOperators.points_distance(mv1, bb_center)
+        d2 = GeometryOperators.points_distance(mv2, bb_center)
+        if d1 > d2:
+            return normal
+        else:
+            return inv_norm
+
+    @pyaedt_function_handler()
+    def create_object(self, non_model: bool = False) -> "Object3d":
+        """Return a new object from the selected face.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modeler.cad.object_3d.Object3d`
+            3D object.
+        non_model : bool, optional
+            Either to create the new object as model or non-model. Default is ``False``.
+
+        References
+        ----------
+        >>> oEditor.CreateObjectFromFaces
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import FacePrimitive
+        >>> obj = FacePrimitive()
+        >>> obj.create_object(non_model=True)
+
+        """
+        return self._object3d._primitives.create_object_from_face(self, non_model)
+
+
+class Point(PyAedtBase):
+    """Manages point attributes for the AEDT 3D Modeler.
+
+    Parameters
+    ----------
+    primitives : :class:`ansys.aedt.core.modeler.cad.primitives_3d.Primitives3D`
+        Inherited parent object.
+    name : str
+        Name of the point.
+
+    Examples
+    --------
+    Basic usage demonstrated with an HFSS design:
+
+    >>> from ansys.aedt.core import Hfss
+    >>> aedtapp = Hfss()
+    >>> primitives = aedtapp.modeler
+
+    Create a point, to return an :class:`ansys.aedt.core.modeler.cad.elements_3d.Point`.
+
+    >>> point = primitives.create_point([30, 30, 0], "my_point", (0, 195, 255))
+    >>> my_point = primitives.points[point.name]
+
+    """
+
+    def __init__(self, primitives, name: str) -> None:
+        self._name = name
+        self._point_coordinate_system = "Global"
+        self._color = None
+        self._position = None
+        self._primitives = primitives
+        self._all_props = None
+
+    @property
+    def _oeditor(self):
+        """Pointer to the oEditor object in the AEDT API. This property is
+        intended primarily for use by FacePrimitive, EdgePrimitive, and
+        VertexPrimitive child objects.
+
+        Returns
+        -------
+        oEditor COM Object
+
+        """
+        return self._primitives.oeditor
+
+    @property
+    def logger(self):
+        """Logger.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import Point
+        >>> obj = Point()
+        >>> obj.logger
+
+        """
+        return self._primitives.logger
+
+    @property
+    def name(self) -> str:
+        """Name of the point as a string value.
+
+        Returns
+        -------
+        str
+           Name of object as a string value.
+
+        References
+        ----------
+        >>> oEditor.GetPropertyValue
+        >>> oEditor.ChangeProperty
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import Point
+        >>> obj = Point()
+        >>> obj.name
+
+        """
+        return self._name
+
+    @name.setter
+    def name(self, point_name: str) -> None:
+        if point_name not in self._primitives.points.keys:
+            if point_name != self._name:
+                name_property = []
+                name_property.append("NAME:Name")
+                name_property.append("Value:=")
+                name_property.append(point_name)
+                changed_property = ["NAME:ChangedProps", name_property]
+                property_servers = ["NAME:PropServers"]
+                property_servers.append(self._name)
+                point_tab = ["NAME:Geometry3DPointTab", property_servers, changed_property]
+                all_tabs = ["NAME:AllTabs", point_tab]
+                self._primitives.oeditor.ChangeProperty(all_tabs)
+                self._name = point_name
+                self._primitives.cleanup_objects()
+        else:
+            self.logger.warning("A point named '%s' already exists.", point_name)
+
+    @property
+    def valid_properties(self) -> dict:
+        """Valid properties.
+
+        References
+        ----------
+        >>> oEditor.GetProperties
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import Point
+        >>> obj = Point()
+        >>> obj.valid_properties
+
+        """
+        if not self._all_props:
+            self._all_props = self._oeditor.GetProperties("Geometry3DPointTab", self._name)
+        return self._all_props
+
+    # Note: We currently cannot get the color property value because
+    # when we try to access it, we only get access to the 'edit' button.
+    # Following is the line that we would use but it currently returns 'edit'.
+    def set_color(self, color_value: str) -> None:
+        """Set symbol color.
+
+        Parameters
+        ----------
+        color_value : string
+            String exposing the new color of the point in the format of "(001 255 255)".
+
+        References
+        ----------
+        >>> oEditor.ChangeProperty
+
+        Examples
+        --------
+        >>> point = self.aedtapp.modeler.create_point([30, 30, 0], "demo_point")
+        >>> point.set_color("(143 175 158)")
+
+        """
+        color_tuple = None
+        if isinstance(color_value, str):
+            try:
+                color_tuple = rgb_color_codes[color_value]
+            except KeyError:
+                parse_string = color_value.replace(")", "").replace("(", "").split()
+                if len(parse_string) == 3:
+                    color_tuple = tuple([int(x) for x in parse_string])
+        else:
+            try:
+                color_tuple = tuple([int(x) for x in color_value])
+            except ValueError:
+                pass
+
+        if color_tuple:
+            try:
+                R = clamp(color_tuple[0], 0, 255)
+                G = clamp(color_tuple[1], 0, 255)
+                B = clamp(color_tuple[2], 0, 255)
+                vColor = ["NAME:Color", "R:=", str(R), "G:=", str(G), "B:=", str(B)]
+                self._change_property(vColor)
+                self._color = (R, G, B)
+            except TypeError:
+                color_tuple = None
+        else:
+            msg_text = f"Invalid color input {color_value} for object {self._name}."
+            self._primitives.logger.warning(msg_text)
+
+    @property
+    def coordinate_system(self) -> str:
+        """Coordinate system of the point.
+
+        Returns
+        -------
+        str
+            Name of the point's coordinate system.
+
+        References
+        ----------
+        >>> oEditor.GetPropertyValue
+        >>> oEditor.ChangeProperty
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import Point
+        >>> obj = Point()
+        >>> obj.coordinate_system
+
+        """
+        if self._point_coordinate_system is not None:
+            return self._point_coordinate_system
+        if "Orientation" in self.valid_properties:
+            self._point_coordinate_system = self._oeditor.GetPropertyValue(
+                "Geometry3DPointTab", self._name, "Orientation"
+            )
+            return self._point_coordinate_system
+
+    @coordinate_system.setter
+    def coordinate_system(self, new_coordinate_system) -> None:
+        coordinate_system = ["NAME:Orientation", "Value:=", new_coordinate_system]
+        self._change_property(coordinate_system)
+        self._point_coordinate_system = new_coordinate_system
+
+    @pyaedt_function_handler()
+    def delete(self) -> None:
+        """Delete the point.
+
+        References
+        ----------
+        >>> oEditor.Delete
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import Point
+        >>> obj = Point()
+        >>> obj.delete()
+
+        """
+        arg = ["NAME:Selections", "Selections:=", self._name]
+        self._oeditor.Delete(arg)
+        self._primitives.cleanup_objects()
+        self.__dict__ = {}
+
+    @pyaedt_function_handler()
+    def _change_property(self, vPropChange):
+        return self._primitives._change_point_property(vPropChange, self.name)
+
+
+class Plane(PyAedtBase):
+    """Manages plane attributes for the AEDT 3D Modeler.
+
+    Parameters
+    ----------
+    primitives : :class:`ansys.aedt.core.modeler.cad.primitives_3d.Primitives3D`
+        Inherited parent object.
+    name : str
+        Name of the point.
+
+    Examples
+    --------
+    Basic usage demonstrated with an HFSS design:
+
+    >>> from ansys.aedt.core import Hfss
+    >>> aedtapp = Hfss()
+    >>> primitives = aedtapp.modeler
+
+    Create a plane, to return an :class:`ansys.aedt.core.modeler.cad.elements_3d.Plane`.
+
+    >>> plane = primitives.create_plane("my_plane", "-0.7mm", "0.3mm", "0mm", "0.7mm", "-0.3mm", "0mm", "(0, 195, 255)")
+    >>> my_plane = primitives.planes[plane.name]
+
+    """
+
+    def __init__(self, primitives, name: str) -> None:
+        self._name = name
+        self._plane_coordinate_system = "Global"
+        self._color = None
+        self._root_point = None
+        self._normal = None
+        self._primitives = primitives
+        self._all_props = None
+
+    @property
+    def _oeditor(self):
+        """Pointer to the oEditor object in the AEDT API.
+
+        This property is intended primarily for use by FacePrimitive, EdgePrimitive, and
+        VertexPrimitive child objects.
+
+        Returns
+        -------
+        oEditor COM Object
+
+        """
+        return self._primitives.oeditor
+
+    @property
+    def logger(self):
+        """Logger.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import Plane
+        >>> obj = Plane()
+        >>> obj.logger
+
+        """
+        return self._primitives.logger
+
+    @property
+    def name(self) -> str:
+        """Name of the plane as a string value.
+
+        Returns
+        -------
+        str
+           Name of object as a string value.
+
+        References
+        ----------
+        >>> oEditor.GetPropertyValue
+        >>> oEditor.ChangeProperty
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import Plane
+        >>> obj = Plane()
+        >>> obj.name
+
+        """
+        return self._name
+
+    @name.setter
+    def name(self, plane_name: str) -> None:
+        if plane_name not in self._primitives.planes.keys():
+            plane_old_name = self._name
+            if plane_name != self._name:
+                name_property = []
+                name_property.append("NAME:Name")
+                name_property.append("Value:=")
+                name_property.append(plane_name)
+                changed_property = ["NAME:ChangedProps", name_property]
+                property_servers = ["NAME:PropServers"]
+                property_servers.append(self._name)
+                plane_tab = ["NAME:Geometry3DPlaneTab", property_servers, changed_property]
+                all_tabs = ["NAME:AllTabs", plane_tab]
+                self._primitives.oeditor.ChangeProperty(all_tabs)
+                self._name = plane_name
+                # TO BE DELETED self._primitives.cleanup_objects()
+                # Update the name of the plane in the ``planes`` dictionary listing all existing planes.
+                self._primitives.planes[plane_name] = self._primitives.planes.pop(plane_old_name)
+        else:
+            self.logger.warning("A plane named '%s' already exists.", plane_name)
+
+    @property
+    def valid_properties(self) -> dict:
+        """Valid properties.
+
+        References
+        ----------
+        >>> oEditor.GetProperties
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import Plane
+        >>> obj = Plane()
+        >>> obj.valid_properties
+
+        """
+        if not self._all_props:
+            self._all_props = self._oeditor.GetProperties("Geometry3DPlaneTab", self._name)
+        return self._all_props
+
+    # Note: You currently cannot get the color property value because
+    # when you try to access it, you only get access to the 'edit' button.
+    # Following is the line that you would use, but it currently returns 'edit'.
+    @pyaedt_function_handler()
+    def set_color(self, color_value: str) -> None:
+        """Set symbol color.
+
+        Parameters
+        ----------
+        color_value : string
+            String exposing the new color of the plane in the format of "(001 255 255)".
+
+        References
+        ----------
+        >>> oEditor.ChangeProperty
+
+        Examples
+        --------
+        >>> plane = self.aedtapp.modeler.create_plane("-0.7mm", "0.3mm", "0mm", "0.7mm", "-0.3mm", "0mm", "demo_plane")
+        >>> plane.set_color("(143 175 158)")
+
+        """
+        color_tuple = None
+        if isinstance(color_value, str):
+            try:
+                color_tuple = rgb_color_codes[color_value]
+            except KeyError:
+                parse_string = color_value.replace(")", "").replace("(", "").split()
+                if len(parse_string) == 3:
+                    color_tuple = tuple([int(x) for x in parse_string])
+        else:
+            try:
+                color_tuple = tuple([int(x) for x in color_value])
+            except ValueError:
+                pass
+
+        if color_tuple:
+            try:
+                R = clamp(color_tuple[0], 0, 255)
+                G = clamp(color_tuple[1], 0, 255)
+                B = clamp(color_tuple[2], 0, 255)
+                vColor = ["NAME:Color", "R:=", str(R), "G:=", str(G), "B:=", str(B)]
+                self._change_property(vColor)
+                self._color = (R, G, B)
+            except TypeError:
+                color_tuple = None
+        else:
+            msg_text = f"Invalid color input {color_value} for object {self._name}."
+            self._primitives.logger.warning(msg_text)
+
+    @property
+    def coordinate_system(self) -> str:
+        """Coordinate system of the plane.
+
+        Returns
+        -------
+        str
+            Name of the plane's coordinate system.
+
+        References
+        ----------
+        >>> oEditor.GetPropertyValue
+        >>> oEditor.ChangeProperty
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import Plane
+        >>> obj = Plane()
+        >>> obj.coordinate_system
+
+        """
+        if self._plane_coordinate_system is not None:
+            return self._plane_coordinate_system
+        if "Orientation" in self.valid_properties:
+            self._plane_coordinate_system = self._oeditor.GetPropertyValue(
+                "Geometry3DPlaneTab", self._name, "Orientation"
+            )
+            return self._plane_coordinate_system
+
+    @coordinate_system.setter
+    def coordinate_system(self, new_coordinate_system: str) -> bool:
+        coordinate_system = ["NAME:Orientation", "Value:=", new_coordinate_system]
+        self._change_property(coordinate_system)
+        self._plane_coordinate_system = new_coordinate_system
+        return True
+
+    @pyaedt_function_handler()
+    def delete(self) -> None:
+        """Delete the plane.
+
+        References
+        ----------
+        >>> oEditor.Delete
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import Plane
+        >>> obj = Plane()
+        >>> obj.delete()
+
+        """
+        arg = ["NAME:Selections", "Selections:=", self._name]
+        self._oeditor.Delete(arg)
+        self._primitives.cleanup_objects()
+        self.__dict__ = {}
+
+    @pyaedt_function_handler()
+    def _change_property(self, vPropChange):
+        return self._primitives._change_plane_property(vPropChange, self.name)
+
+
+class HistoryProps(dict):
+    """Manages an object's history properties.
+
+    Examples
+    --------
+    >>> from ansys.aedt.core.modeler.cad.elements_3d import HistoryProps
+    >>> obj = HistoryProps()
+
+    """
+
+    def __setitem__(self, key, value):
+        value = _units_assignment(value)
+        if self._pyaedt_child._app:
+            value = _units_assignment(value)
+        dict.__setitem__(self, key, value)
+        if "auto_update" in dir(self._pyaedt_child) and self._pyaedt_child.auto_update:
+            self._pyaedt_child.update_property(key, value)
+
+    def __init__(self, child_object, props) -> None:
+        dict.__init__(self)
+        if props:
+            for key, value in props.items():
+                dict.__setitem__(self, key, value)
+        self._pyaedt_child = child_object
+
+    def _setitem_without_update(self, key, value):
+        dict.__setitem__(self, key, value)
+
+    def pop(self, key, default=None):
+        dict.pop(self, key, default)
+
+
+class BinaryTreeNode:
+    """Manages an object's history structure.
+
+    Examples
+    --------
+    >>> from ansys.aedt.core.modeler.cad.elements_3d import BinaryTreeNode
+    >>> obj = BinaryTreeNode()
+
+    """
+
+    def __init__(
+        self, node, child_object, first_level: bool = False, get_child_obj_arg=None, root_name=None, app=None
+    ) -> None:
+        self._props = None
+        self._app = app
+        if not root_name:
+            root_name = node
+        self._saved_root_name = node if first_level else root_name
+        self._get_child_obj_arg = get_child_obj_arg
+        self._node = node
+        self.child_object = child_object
+        self.auto_update = True
+        self._children = {}
+        self.__first_level = first_level
+        if first_level:
+            self._update_children()
+
+    def _update_children(self) -> None:
+        self._children = {}
+        name = None
+        try:
+            if self._get_child_obj_arg is None:
+                child_names = [i for i in list(self.child_object.GetChildNames()) if not i.startswith("CachedBody")]
+            else:
+                child_names = [
+                    i
+                    for i in list(self.child_object.GetChildNames(self._get_child_obj_arg))
+                    if not i.startswith("CachedBody")
+                ]
+        except Exception:  # pragma: no cover
+            child_names = []
+        for i in child_names:
+            if not name:
+                name = i
+            if i == "OperandPart_" + self._saved_root_name or i == "OperandPart_" + self._saved_root_name.split("_")[0]:
+                continue
+            elif not i.startswith("OperandPart_"):
+                try:
+                    self._children[i] = BinaryTreeNode(
+                        i, self.child_object.GetChildObject(i), root_name=self._saved_root_name, app=self._app
+                    )
+                except Exception:
+                    settings.logger.debug(f"Failed to instantiate BinaryTreeNode for {i}")
+            else:
+                names = self.child_object.GetChildObject(i).GetChildNames()
+                for name in names:
+                    self._children[name] = BinaryTreeNode(
+                        name,
+                        self.child_object.GetChildObject(i).GetChildObject(name),
+                        root_name=self._saved_root_name,
+                        app=self._app,
+                    )
+        if name and self.__first_level:
+            self.child_object = self._children[name].child_object
+            self._children[name].properties["Command"] = self.properties.get("Command", "")
+            self._props = self._children[name].properties
+            if name == "CreatePolyline:1":
+                self.segments = self._children[name].children
+            del self._children[name]
+
+    @property
+    def children(self) -> dict:
+        """Retrieve children."""
+        if not self._children:
+            self._update_children()
+        return self._children
+
+    @property
+    def properties(self) -> "HistoryProps":
+        """Properties data.
+
+        Returns
+        -------
+        :class:``ansys.aedt.coree.modeler.cad.elements_3d.HistoryProps``
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import BinaryTreeNode
+        >>> obj = BinaryTreeNode()
+        >>> obj.properties
+
+        """
+        self._props = {}
+        if not getattr(self, "child_object", None):
+            return self._props
+        if settings.aedt_version >= "2024.2":
+            try:
+                from ansys.aedt.core.application import _get_data_model
+
+                props = _get_data_model(self.child_object)
+                for p in self.child_object.GetPropNames():
+                    self._props[p] = props.get(p, None)
+            except Exception:
+                for p in self.child_object.GetPropNames():
+                    try:
+                        self._props[p] = self.child_object.GetPropValue(p)
+                    except Exception:
+                        self._props[p] = None
+        else:
+            for p in self.child_object.GetPropNames():
+                try:
+                    self._props[p] = self.child_object.GetPropValue(p)
+                except Exception:
+                    self._props[p] = None
+        self._props = HistoryProps(self, self._props)
+        return self._props
+
+    @property
+    def command(self) -> str:
+        """Command of the modeler hystory if available.
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import BinaryTreeNode
+        >>> obj = BinaryTreeNode()
+        >>> obj.command
+
+        """
+        return self.properties.get("Command", "")
+
+    def update_property(self, prop_name: str, prop_value: str) -> bool:
+        """Update the property of the binary tree node.
+
+        Parameters
+        ----------
+        prop_name : str
+             Name of the property.
+        prop_value : str
+             Value of the property.
+
+        Returns
+        -------
+        bool
+            ``True`` when successful, ``False`` when failed.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import BinaryTreeNode
+        >>> obj = BinaryTreeNode()
+        >>> obj.update_property(prop_name=1, prop_value=1)
+
+        """
+        if prop_value is None:
+            settings.logger.warning(f"Property {prop_name} set to None ignored.")
+            return
+        try:
+            result = self.child_object.SetPropValue(prop_name, prop_value)
+            if result:
+                if prop_name == "Name" and getattr(self, "_name", False):
+                    setattr(self, "_name", prop_value)
+            else:
+                settings.logger.warning(f"Property {prop_name} is read-only.")
+                # Property Name duplicated
+                return
+        except Exception:  # pragma: no cover
+            # Property read-only
+            raise KeyError
+
+    @pyaedt_function_handler()
+    def _jsonalize_tree(self, binary_tree_node):
+        childrend_dict = {}
+        for _, node in binary_tree_node.children.items():
+            childrend_dict.update(self._jsonalize_tree(node))
+        return {binary_tree_node._node: {"Props": binary_tree_node.properties, "Children": childrend_dict}}
+
+    @pyaedt_function_handler()
+    def jsonalize_tree(self) -> dict:
+        """Create dictionary from the Binary Tree.
+
+        Returns
+        -------
+        dict
+            Dictionary containing the information of the Binary Three.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import BinaryTreeNode
+        >>> obj = BinaryTreeNode()
+        >>> obj.jsonalize_tree()
+
+        """
+        return self._jsonalize_tree(binary_tree_node=self)
+
+    @pyaedt_function_handler()
+    def _suppress(self, node, app, suppress) -> bool:
+        if not node.command.startswith("Duplicate") and "Suppress Command" in node.properties:
+            app.oeditor.ChangeProperty(
+                [
+                    "NAME:AllTabs",
+                    [
+                        "NAME:Geometry3DCmdTab",
+                        ["NAME:PropServers", node.child_object.GetObjPath().split("/")[3] + ":" + node._node],
+                        ["NAME:ChangedProps", ["NAME:Suppress Command", "Value:=", suppress]],
+                    ],
+                ]
+            )
+
+        for _, node in node.children.items():
+            self._suppress(node, app, suppress)
+        return True
+
+    @pyaedt_function_handler()
+    def suppress_all(self, app: object) -> bool:
+        """Activate suppress option for all the operations contained in the binary tree node.
+
+        Parameters
+        ----------
+        app : object
+            An AEDT application from ``ansys.aedt.core.application``.
+
+        Returns
+        -------
+        bool
+            ``True`` when successful.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import BinaryTreeNode
+        >>> obj = BinaryTreeNode()
+        >>> obj.suppress_all(app=1)
+
+        """
+        return self._suppress(self, app, True)
+
+    @pyaedt_function_handler()
+    def unsuppress_all(self, app: object) -> bool:
+        """Disable suppress option for all the operations contained in the binary tree node.
+
+        Parameters
+        ----------
+        app : object
+            An AEDT application from ``ansys.aedt.core.application``.
+
+        Returns
+        -------
+        bool
+            ``True`` when successful.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.modeler.cad.elements_3d import BinaryTreeNode
+        >>> obj = BinaryTreeNode()
+        >>> obj.unsuppress_all(app=1)
+
+        """
+        return self._suppress(self, app, False)

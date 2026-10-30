@@ -1,0 +1,339 @@
+# -*- coding: utf-8 -*-
+#
+# Copyright (C) 2021 - 2026 Synopsys, Inc. and ANSYS, Inc. All rights reserved.
+# SPDX-License-Identifier: MIT
+#
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+"""Defines these classes: `FieldPlot`, `PostProcessor`, and `SolutionData`.
+
+The module provides all functionalities for creating and editing plots in the 3D tools.
+
+Examples
+--------
+>>> from ansys.aedt.core.visualization.post.field_summary import FieldSummary
+>>> obj = FieldSummary()
+
+"""
+
+from collections import defaultdict
+import csv
+import os
+import tempfile
+from typing import TYPE_CHECKING
+
+from ansys.aedt.core.base import PyAedtBase
+from ansys.aedt.core.generic.file_utils import open_file
+from ansys.aedt.core.generic.general_methods import pyaedt_function_handler
+
+if TYPE_CHECKING:
+    import pandas as pd
+else:
+    pd = None
+
+
+def _import_pandas():
+    """Lazy import of pandas. Only imports when needed."""
+    global pd
+    if pd is None:
+        try:
+            import pandas as pd_module
+
+            pd = pd_module
+        except ImportError:  # pragma: no cover
+            raise ImportError(
+                "The Pandas module is required to run functionalities of FieldSummary.\n"
+                "Install with:\n\n"
+                "pip install pandas"
+            )
+    return pd
+
+
+TOTAL_QUANTITIES = [
+    "HeatFlowRate",
+    "RadiationFlow",
+    "ConductionHeatFlow",
+    "ConvectiveHeatFlow",
+    "MassFlowRate",
+    "VolumeFlowRate",
+    "SurfJouleHeatingDensity",
+]
+"""Total quantities."""
+AVAILABLE_QUANTITIES = [
+    "Temperature",
+    "SurfTemperature",
+    "HeatFlowRate",
+    "RadiationFlow",
+    "ConductionHeatFlow",
+    "ConvectiveHeatFlow",
+    "HeatTransCoeff",
+    "HeatFlux",
+    "RadiationFlux",
+    "Speed",
+    "Ux",
+    "Uy",
+    "Uz",
+    "SurfUx",
+    "SurfUy",
+    "SurfUz",
+    "Pressure",
+    "SurfPressure",
+    "MassFlowRate",
+    "VolumeFlowRate",
+    "MassFlux",
+    "ViscosityRatio",
+    "WallYPlus",
+    "TKE",
+    "Epsilon",
+    "Kx",
+    "Ky",
+    "Kz",
+    "SurfElectricPotential",
+    "ElectricPotential",
+    "SurfCurrentDensity",
+    "CurrentDensity",
+    "SurfCurrentDensityX",
+    "SurfCurrentDensityY",
+    "SurfCurrentDensityZ",
+    "CurrentDensityX",
+    "CurrentDensityY",
+    "CurrentDensityZ",
+    "SurfJouleHeatingDensity",
+    "JouleHeatingDensity",
+]
+"""Available quantities."""
+
+
+class FieldSummary(PyAedtBase):
+    """Provides Icepak field summary methods.
+
+    Examples
+    --------
+    >>> from ansys.aedt.core.visualization.post.field_summary import FieldSummary
+    >>> obj = FieldSummary()
+
+    """
+
+    def __init__(self, app) -> None:
+        self._app = app
+        self.calculations = []
+
+    @pyaedt_function_handler()
+    def add_calculation(
+        self,
+        entity: str,
+        geometry: str,
+        geometry_name: str | list[str],
+        quantity: str,
+        normal: str = "",
+        side: str = "Default",
+        mesh: str = "All",
+        ref_temperature: str = "AmbientTemp",
+        time: str = "0s",
+    ) -> bool:
+        """Add an entry in the field summary calculation requests.
+
+        Parameters
+        ----------
+        entity : str
+            Type of entity to perform the calculation on. Options are
+             ``"Boundary"``, ``"Monitor``", and ``"Object"``.
+             (``"Monitor"`` is available in AEDT 2024 R1 and later.)
+        geometry : str
+            Location to perform the calculation on. Options are
+            ``"Surface"`` and ``"Volume"``.
+        geometry_name : str or list of str
+            Objects to perform the calculation on. If a list is provided,
+            the calculation is performed on the combination of those
+            objects.
+        quantity : str
+            Quantity to compute.
+        normal : list of floats
+            Coordinate values for direction relative to normal. The default is ``""``,
+            in which case the normal to the face is used.
+        side : str, optional
+            String containing which side of the face to use. The default is
+            ``"Default"``. Options are ``"Adjacent"``, ``"Combined"``, and
+            `"Default"``.
+        mesh : str, optional
+            Surface meshes to use. The default is ``"All"``. Options are ``"All"`` and
+            ``"Reduced"``.
+        ref_temperature : str, optional
+            Reference temperature to use in the calculation of the heat transfer
+            coefficient. The default is ``"AmbientTemp"``.
+        time : str, optional
+            Timestep to get the data from. Default is ``"0s"``.
+
+        Returns
+        -------
+        bool
+            ``True`` when successful, ``False`` when failed.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.visualization.post.field_summary import FieldSummary
+        >>> obj = FieldSummary()
+        >>> obj.add_calculation(entity=1, geometry=1, geometry_name=["Box1"], quantity=1)
+
+        """
+        if quantity not in AVAILABLE_QUANTITIES:
+            raise AttributeError(
+                f"Quantity {quantity} is not supported. Available quantities are:\n{', '.join(AVAILABLE_QUANTITIES)}"
+            )
+        if isinstance(normal, list):
+            if not isinstance(normal[0], str):
+                normal = [str(i) for i in normal]
+            normal = ",".join(normal)
+        if isinstance(geometry_name, str):
+            geometry_name = [geometry_name]
+        calc_args = [
+            entity,
+            geometry,
+            ",".join(geometry_name),
+            quantity,
+            normal,
+            side,
+            mesh,
+            ref_temperature,
+            False,
+        ]  # TODO : last argument not documented
+        if self._app.solution_type == "Transient":
+            calc_args = [time] + calc_args
+        self.calculations.append(calc_args)
+        return True
+
+    @pyaedt_function_handler()
+    def get_field_summary_data(
+        self, setup: str | None = None, variation: dict | None = None, intrinsics: str = "", pandas_output: bool = False
+    ):
+        """Get  field summary output computation.
+
+        Parameters
+        ----------
+        setup : str, optional
+            Setup name to use for the computation. The
+            default is ``None``, in which case the nominal variation is used.
+        variation : dict, optional
+            Dictionary containing the design variation to use for the computation.
+            The default is  ``{}``, in which case nominal variation is used.
+        intrinsics : str, optional
+            Intrinsic values to use for the computation. The default is ``""``,
+            which is suitable when no frequency needs to be selected.
+        pandas_output : bool, optional
+            Whether to use pandas output. The default is ``False``, in
+            which case the dictionary output is used.
+
+        Returns
+        -------
+        dict or pandas.DataFrame
+            Output type depending on the Boolean ``pandas_output`` parameter.
+            The output consists of information exported from the field summary.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.visualization.post.field_summary import FieldSummary
+        >>> obj = FieldSummary()
+        >>> obj.get_field_summary_data(setup="Setup1", variation={"Name": "Value"})
+
+        """
+        if variation is None:
+            variation = {}
+        with tempfile.NamedTemporaryFile(mode="w+", delete=False) as temp_file:
+            temp_file.close()
+            self.export_csv(temp_file.name, setup, variation, intrinsics)
+            with open_file(temp_file.name, "r") as f:
+                for _ in range(4):
+                    _ = next(f)
+                reader = csv.DictReader(f)
+                out_dict = defaultdict(list)
+                for row in reader:
+                    for key in row.keys():
+                        out_dict[key].append(row[key])
+            os.remove(temp_file.name)
+            if pandas_output:
+                pd_module = _import_pandas()
+                df = pd_module.DataFrame.from_dict(out_dict)
+                for col in ["Min", "Max", "Mean", "Stdev", "Total"]:
+                    if col in df.columns:
+                        df[col] = pd_module.to_numeric(df[col], errors="coerce")
+                return df
+        return out_dict
+
+    @pyaedt_function_handler()
+    def export_csv(
+        self, output_file: str, setup: str | None = None, variations: dict | None = None, intrinsics: str = ""
+    ) -> bool:
+        """Get the field summary output computation.
+
+        Parameters
+        ----------
+        output_file : str
+            Path and filename to write the output file to.
+        setup : str, optional
+            Setup name to use for the computation. The
+            default is ``None``, in which case the nominal variation is used.
+        variations : dict, optional
+            Dictionary containing the design variation to use for the computation.
+            The default is ``None``, in which case the nominal variation is used.
+        intrinsics : str, optional
+            Intrinsic values to use for the computation. The default is ``""``,
+            which is suitable when no frequency needs to be selected.
+
+        Returns
+        -------
+        bool
+            ``True`` when successful, ``False`` when failed.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.visualization.post.field_summary import FieldSummary
+        >>> obj = FieldSummary()
+        >>> obj.export_csv(output_file="example.csv")
+
+        """
+        if not setup:
+            setup = self._app.nominal_sweep
+        if not variations and self._app.available_variations.all:
+            variations = self._app.available_variations.variations(setup, True)[0]
+        dv_string = ""
+        for el in variations:
+            dv_string += el + "='" + variations[el] + "' "
+        self._create_field_summary(setup, dv_string)
+        self._app.osolution.ExportFieldsSummary(
+            [
+                "SolutionName:=",
+                setup,
+                "DesignVariationKey:=",
+                dv_string,
+                "ExportFileName:=",
+                output_file,
+                "IntrinsicValue:=",
+                intrinsics,
+            ]
+        )
+        return True
+
+    @pyaedt_function_handler()
+    def _create_field_summary(self, setup, variation):
+        arg = ["SolutionName:=", setup, "Variation:=", variation]
+        for i in self.calculations:
+            arg.append("Calculation:=")
+            arg.append(i)
+        self._app.osolution.EditFieldsSummarySetting(arg)

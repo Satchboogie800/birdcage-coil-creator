@@ -1,0 +1,79 @@
+// Proto file representing the EDB hierarchy objects class
+
+syntax = "proto3";
+
+// Package
+package ansys.api.edb.v1;
+
+// Imports
+import "ansys/api/edb/v1/edb_messages.proto";
+import "ansys/api/edb/v1/point_data.proto";
+import "ansys/api/edb/v1/transform.proto";
+import "ansys/api/edb/v1/refs.proto";
+
+// Hierarchy object service definition
+service HierarchyObjectService {
+  // summary: Get Transform
+  // io_flags:
+  //   - cache
+  rpc GetTransform(EDBObjMessage) returns (EDBObjMessage) {}
+
+  // summary: Set Transform
+  // io_flags:
+  //   - buffer
+  rpc SetTransform(PointerPropertyMessage) returns (google.protobuf.Empty) {}
+
+  // summary: Get Name
+  // io_flags:
+  //   - cache
+  rpc GetName(EDBObjMessage) returns (google.protobuf.StringValue) {}
+
+  // summary: Set Name
+  // io_flags:
+  //   - buffer
+  rpc SetName(EDBObjNameMessage) returns (google.protobuf.Empty) {}
+
+  // summary: Get Component
+  // io_flags:
+  //   - cache
+  rpc GetComponent(EDBObjMessage) returns (EDBObjMessage) {}
+
+  // summary: Get Placement Layer
+  // io_flags:
+  //   - cache
+  rpc GetPlacementLayer(EDBObjMessage) returns (EDBObjMessage) {}
+
+  // summary: Set Placement Layer
+  // io_flags:
+  //   - buffer
+  rpc SetPlacementLayer(LayerRefPropertyMessage) returns (google.protobuf.Empty) {}
+
+  // summary: Get Location
+  // io_flags:
+  //   - cache
+  rpc GetLocation(EDBObjMessage) returns (PointMessage) {}
+
+  // summary: Set Location
+  // io_flags:
+  //   - buffer
+  rpc SetLocation(PointPropertyMessage) returns (google.protobuf.Empty) {}
+
+  // summary: Get Solve Independent Preference
+  // io_flags:
+  //   - cache
+  rpc GetSolveIndependentPreference(EDBObjMessage) returns (google.protobuf.BoolValue) {}
+
+  // summary: Set Solve Independent Preference
+  // io_flags:
+  //   - buffer
+  rpc SetSolveIndependentPreference(BoolPropertyMessage) returns (google.protobuf.Empty) {}
+}
+
+message ObjectNameInLayoutMessage {
+  EDBObjMessage layout = 1;
+  string name = 2;
+}
+
+
+
+

@@ -1,0 +1,1354 @@
+# -*- coding: utf-8 -*-
+#
+# Copyright (C) 2021 - 2026 Synopsys, Inc. and ANSYS, Inc. All rights reserved.
+# SPDX-License-Identifier: MIT
+#
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+from __future__ import annotations
+
+import ast
+from typing import TypeVar
+import warnings
+
+from ansys.aedt.core.emit_core.emit_constants import EMIT_FN_ALLOWED_FUNCS
+from ansys.aedt.core.emit_core.emit_constants import EMIT_FN_ALLOWED_OPS
+from ansys.aedt.core.emit_core.emit_constants import EMIT_FN_ALLOWED_VARS
+from ansys.aedt.core.emit_core.emit_constants import EMIT_INTERNAL_UNITS
+from ansys.aedt.core.emit_core.emit_constants import EMIT_VALID_UNITS
+from ansys.aedt.core.emit_core.emit_constants import data_rate_conv
+from ansys.aedt.core.emit_core.emit_function_validator import FunctionValidator
+import ansys.aedt.core.generic.constants as consts
+from ansys.aedt.core.generic.general_methods import pyaedt_function_handler
+from ansys.aedt.core.internal.checks import min_aedt_version
+from ansys.aedt.core.internal.checks import requires_graphical_dependency
+
+# Type variable to be used in methods that might receive a subclass of EmitNode
+T = TypeVar("T", bound="EmitNode")
+
+_FLOAT_LIST_PROPERTIES = (
+    "Position",
+    "Relative Position",
+    "Orientation",
+    "Relative Orientation",
+    "Frequency Domain",
+)
+
+
+class EmitNode:
+    """Emit node class for managing and interacting with EMIT nodes."""
+
+    def __init__(self, emit_obj, result_id, node_id) -> None:
+        self._emit_obj = emit_obj
+        self._oDesign = emit_obj.odesign
+        self._oRevisionData = self._oDesign.GetModule("EmitCom")
+        self._result_id = result_id
+        self._node_id = node_id
+        self._valid = True
+        self._is_component = False
+        self._odesktop = emit_obj.odesktop
+
+    def __eq__(self, other):
+        return (self._result_id == other._result_id) and (self._node_id == other._node_id)
+
+    @property
+    def odesktop(self):
+        """Desktop instance used for version checking."""
+        return self._emit_obj.odesktop
+
+    @staticmethod
+    def props_to_dict(props: list[str]) -> dict:
+        """Converts a list of key/value pairs to a dictionary.
+
+        Parameters
+        ----------
+        props : list
+            Each string is a key/value pair in the form: 'key=value'.
+
+        Returns
+        -------
+        dict
+            Properties returned as a dictionary.
+        """
+        result = {}
+        for prop in props:
+            key, _, val = prop.partition("=")
+            result[key] = val
+        return result
+
+    @property
+    @min_aedt_version("2025.2")
+    def valid(self) -> bool:
+        """Indicates if this object is still valid (not detached from EMIT node).
+
+        Returns
+        -------
+        bool
+            ``True`` if the object is valid, ``False`` otherwise.
+        """
+        return self._valid
+
+    @property
+    @min_aedt_version("2025.2")
+    def name(self) -> str:
+        """Name of the node.
+
+        Returns
+        -------
+        str
+            Name of the node.
+        """
+        return self._get_property("Name", True)
+
+    @name.setter
+    @min_aedt_version("2025.2")
+    def name(self, requested_name: str) -> None:
+        """Renames the node/component.
+
+        Parameters
+        ----------
+        requested_name : str
+            New name for the node/component.
+
+        Raises
+        ------
+        ValueError
+            If the node is read-only or cannot be renamed.
+        """
+        if self._result_id > 0:
+            raise ValueError("This node is read-only for kept results.")
+
+        if self.get_is_component():
+            try:
+                self._emit_obj.oeditor.RenameComponent(self.name, requested_name)
+            except Exception:
+                raise ValueError(f"Failed to rename {self.name} to {requested_name}")
+        else:
+            _ = self._oRevisionData.RenameEmitNode(self._result_id, self._node_id, requested_name)
+
+    @property
+    @min_aedt_version("2025.2")
+    def _node_type(self) -> str:
+        """Type of the node.
+
+        Returns
+        -------
+        str
+            Type of the node.
+        """
+        return self._get_property("Type", True)
+
+    @property
+    @min_aedt_version("2025.2")
+    def _parent(self) -> EmitNode:
+        """Parent node of this node.
+
+        Returns
+        -------
+        EmitNode
+            Parent node.
+        """
+        parent_name = self._get_property("Parent", True)
+        parent_name = parent_name.replace("NODE-*-", "")
+        node_id = self._oRevisionData.GetTopLevelNodeID(0, parent_name)
+        return self._get_node(node_id)
+
+    @property
+    @min_aedt_version("2025.2")
+    def parent_name(self):
+        """Full node name of the parent node including the entire tree structure
+
+        Returns
+        -------
+        Str
+            Full node name of this node's parent node.
+        """
+        return self._get_property("Parent", True)
+
+    @min_aedt_version("2025.2")
+    def _full_node_name(self, name="") -> str:
+        """Convert a Component's short name to a full name with the format: NODE-*-{name}.
+
+        If name is ``""`` then the method converts the node's name to a full name.
+
+        Parameters
+        ----------
+        name : str, optional
+            Short name to convert.
+
+        Returns
+        -------
+        Str
+            Full node name with the format: NODE-*-{name}.
+        """
+        if name == "":
+            return self.parent_name + "-*-" + self.name
+
+        if name.startswith("NODE-*-"):
+            return name
+
+        comp = self._emit_obj.results.analyze().get_component_node(name)
+        if comp is not None:
+            return comp.parent_name + "-*-" + name
+
+        return ""
+
+    @property
+    @min_aedt_version("2025.2")
+    def properties(self) -> dict:
+        """Node properties.
+
+        Returns
+        -------
+        dict
+            Dictionary of the node's properties with display name as key.
+        """
+        props = self._oRevisionData.GetEmitNodeProperties(self._result_id, self._node_id, True)
+        props = self.props_to_dict(props)
+        return props
+
+    @property
+    @min_aedt_version("2025.2")
+    def warnings(self) -> str:
+        """Warnings for the node, if any.
+
+        Returns
+        -------
+        str
+            Warning message(s).
+        """
+        node_warnings = ""
+        try:
+            node_warnings = self._get_property("Warnings")
+        except Exception:
+            warnings.warn(
+                f"Unable to get the warnings for node: {self.name}.",
+                UserWarning,
+            )
+        return node_warnings
+
+    @property
+    @min_aedt_version("2025.2")
+    def allowed_child_types(self) -> list[str]:
+        """Child types allowed for this node.
+
+        Returns
+        -------
+        list
+            Allowed child types.
+        """
+        return self._oRevisionData.GetAllowedChildTypes(self._result_id, self._node_id)
+
+    @min_aedt_version("2025.2")
+    def _get_node(self, node_id: int) -> EmitNode:
+        """Gets a node for this node's revision with the given id.
+
+        Parameters
+        ----------
+        node_id: int
+            id of node to construct.
+
+        Returns
+        -------
+        node: EmitNode
+            The node.
+
+        Examples
+        --------
+        >>> new_node = node._get_node(node_id)
+        """
+        from ansys.aedt.core.emit_core.nodes import generated
+        from ansys.aedt.core.emit_core.nodes.emitter_node import EmitterNode
+
+        props = self._oRevisionData.GetEmitNodeProperties(self._result_id, node_id, True)
+        props = self.props_to_dict(props)
+        node_type = props["Type"]
+
+        prefix = "" if self._result_id == 0 else "ReadOnly"
+
+        node = None
+        try:
+            type_class = EmitNode
+            if node_type == "RadioNode" and props["IsEmitter"] == "true":
+                type_class = EmitterNode
+                # TODO: enable when we add ReadOnlyNodes
+                # if prefix == "":
+                # type_class = EmitterNode
+                # else:
+                #    type_class = ReadOnlyEmitterNode
+            elif node_type == "Band" and props["IsEmitterBand"] == "true":
+                type_class = getattr(generated, f"{prefix}Waveform")
+            elif node_type == "TxSpectralProfNode":
+                if self.properties["IsEmitterBand"] == "true":
+                    type_class = getattr(generated, f"{prefix}TxSpectralProfEmitterNode")
+                else:
+                    type_class = getattr(generated, f"{prefix}TxSpectralProfNode")
+            else:
+                type_class = getattr(generated, f"{prefix}{node_type}")
+            node = type_class(self._emit_obj, self._result_id, node_id)
+        except AttributeError:
+            node = EmitNode(self._emit_obj, self._result_id, node_id)
+        return node
+
+    @property
+    @min_aedt_version("2025.2")
+    def children(self) -> list[EmitNode]:
+        """Child nodes of this node.
+
+        Returns
+        -------
+        list[EmitNode]
+            List of child nodes.
+        """
+        child_names = self._oRevisionData.GetChildNodeNames(self._result_id, self._node_id)
+        child_ids = [self._oRevisionData.GetChildNodeID(self._result_id, self._node_id, name) for name in child_names]
+        child_nodes = [self._get_node(child_id) for child_id in child_ids]
+        return child_nodes
+
+    @staticmethod
+    def _parse_property_value(
+        prop: str, val: str | list[str], isTable: bool = False
+    ) -> str | list[str] | list[float] | list[tuple[str, ...]]:
+        """Parse a property value into a list of strings or floats.
+
+        Parameters
+        ----------
+        prop : str
+            Property name.
+        val : str or list[str]
+            Property value.
+        isTable : bool, optional
+            Whether the property is a table.
+
+        Returns
+        -------
+        str | list[str] | list[float] | list[tuple[str, ...]]
+            Parsed property value.
+        """
+        raw_val = val
+
+        if prop in _FLOAT_LIST_PROPERTIES:
+            if isinstance(raw_val, list):
+                return [float(x) for x in raw_val]
+            return [float(x) for x in raw_val.split()]
+
+        if isTable:
+            rows = raw_val.split(";") if isinstance(raw_val, str) else raw_val
+            if isinstance(rows, str):
+                rows = rows.split(";")
+            return [tuple(row.split("|")) for row in rows if row]
+
+        if isinstance(raw_val, list):
+            return raw_val
+        if "|" in raw_val:
+            return raw_val.split("|")
+        return raw_val
+
+    @staticmethod
+    def _format_property_value(prop: str, value) -> str:
+        """Format a property value into a string.
+
+        Parameters
+        ----------
+        prop : str
+            Property name.
+        value : bool | float | list[float] | str
+            Property value.
+
+        Returns
+        -------
+        str
+            Formatted property value.
+        """
+        if isinstance(value, bool):
+            return str(value).lower()
+        if prop in _FLOAT_LIST_PROPERTIES:
+            if isinstance(value, list):
+                space = " "
+                return space.join(str(x) for x in value)
+            if isinstance(value, str) and value.startswith("[") and value.endswith("]"):
+                parsed = ast.literal_eval(value)
+                if isinstance(parsed, list):
+                    space = " "
+                    return space.join(str(x) for x in parsed)
+        if isinstance(value, list):
+            pipe = "|"
+            return pipe.join(str(x) for x in value)
+        return str(value)
+
+    @staticmethod
+    def _format_property_string(prop: str, value) -> str:
+        """Format a property name and value into an EmitCom ``name=value`` string."""
+        formatted_value = EmitNode._format_property_value(prop, value)
+        result = prop + chr(61) + formatted_value
+        return result
+
+    @min_aedt_version("2025.2")
+    @pyaedt_function_handler()
+    def get_properties(
+        self,
+        property_names: list[str] | None = None,
+        skipChecks: bool = True,
+        raw: bool = True,
+    ) -> dict[str, str | list[str] | list[float]]:
+        """Get all of a node's properties in a single API call.
+
+        This method is intended for scripts that need to read multiple properties efficiently.
+
+        Parameters
+        ----------
+        property_names : list[str], optional
+            Property names to return. When ``None``, all properties are returned.
+        skipChecks : bool, optional
+            Whether to skip property visibility checks. The default is ``True``.
+        raw : bool, optional
+            When ``True``, return string values
+            When ``False``, parse values such as position and orientation into
+            lists of floats. The default is ``True``.
+
+        Returns
+        -------
+        dict
+            Dictionary of property names and values.
+
+        Raises
+        ------
+        ValueError
+            If a requested property is not found or not available.
+        """
+        try:
+            props = self._oRevisionData.GetEmitNodeProperties(self._result_id, self._node_id, skipChecks)
+        except Exception:
+            errors = self._emit_obj.logger.aedt_messages.error_level
+            msg = errors[-1] if errors else "Failed to get node properties."
+            raise ValueError(str(msg))
+        props_dict = self.props_to_dict(props)
+
+        if property_names is not None:
+            missing = [name for name in property_names if name not in props_dict]
+            if missing:
+                raise ValueError(
+                    f"Properties not found or not available for {self._node_type} configuration: {', '.join(missing)}"
+                )
+            props_dict = {name: props_dict[name] for name in property_names}
+
+        if raw:
+            return props_dict
+
+        return {name: self._parse_property_value(name, value) for name, value in props_dict.items()}
+
+    @min_aedt_version("2025.2")
+    @pyaedt_function_handler()
+    def set_properties(
+        self,
+        properties: dict[str, str | bool | float | list] | list[str],
+        skipChecks: bool = True,
+    ) -> None:
+        """Set multiple node properties simultaneously.
+
+        This method is intended for scripts that need to write multiple properties efficiently.
+
+        Parameters
+        ----------
+        properties : dict or list[str]
+            Properties to set. Either a dictionary of property names and values or
+            a list of ``'name=value'`` strings as used by EmitCom.
+        skipChecks : bool, optional
+            Whether to skip property visibility checks. The default is ``True``.
+
+        Raises
+        ------
+        TypeError
+            If ``properties`` is not a dictionary or list of strings.
+        ValueError
+            If property assignment fails.
+        """
+        prop_strings, prop_keys = self._normalize_properties_input(properties)
+        if not prop_strings:
+            return
+
+        try:
+            available_props = self._oRevisionData.GetEmitNodeProperties(self._result_id, self._node_id, skipChecks)
+        except Exception:
+            errors = self._emit_obj.logger.aedt_messages.error_level
+            msg = errors[-1] if errors else "Failed to get node properties."
+            raise ValueError(str(msg))
+        available_dict = self.props_to_dict(available_props)
+        missing = [name for name in prop_keys if name not in available_dict]
+        if missing:
+            raise ValueError(
+                f"Properties not found or not available for {self._node_type} configuration: {', '.join(missing)}"
+            )
+
+        try:
+            self._oRevisionData.SetEmitNodeProperties(self._result_id, self._node_id, prop_strings, skipChecks)
+        except Exception:
+            raise ValueError(self._format_set_properties_error(prop_strings, prop_keys))
+
+    def _normalize_properties_input(self, properties: object) -> tuple[list[str], list[str]]:
+        """Normalize the properties input into a list of strings and a list of keys.
+
+        Parameters
+        ----------
+        properties : object
+            Properties to normalize.
+
+        Returns
+        -------
+        tuple[list[str], list[str]]
+            List of property strings and list of property keys.
+
+        Raises
+        ------
+        TypeError
+            If ``properties`` is not a dictionary or list of strings.
+        """
+        if isinstance(properties, dict):
+            prop_dict = properties
+        elif isinstance(properties, list):
+            prop_dict = {}
+            for item in properties:
+                if not isinstance(item, str) or "=" not in item:
+                    raise TypeError("When properties is a list, each item must be a 'name=value' string.")
+                key, value = item.split("=", 1)
+                stripped_key = key.strip()
+                stripped_value = value.strip()
+                prop_dict[stripped_key] = stripped_value
+        else:
+            raise TypeError("properties must be a dict or list of 'name=value' strings.")
+
+        prop_strings = [self._format_property_string(key, value) for key, value in prop_dict.items()]
+        return prop_strings, list(prop_dict.keys())
+
+    def _format_set_properties_error(self, prop_strings: list[str], prop_keys: list[str]) -> str:
+        """Format the error message for setting properties.
+
+        Parameters
+        ----------
+        prop_strings : list[str]
+            List of property strings.
+        prop_keys : list[str]
+            List of property keys.
+
+        Returns
+        -------
+        str
+            Formatted error message.
+        """
+        aedt_errors = self._emit_obj.logger.aedt_messages.error_level
+        error_text = str(aedt_errors[-1]) if aedt_errors else None
+        if not error_text:
+            props_desc = ", ".join(repr(key) for key in prop_keys)
+            result = "Failed setting properties on {} node {} ({})".format(self._node_type, repr(self.name), props_desc)
+            return result
+
+        matching_keys = [key for key in prop_keys if key in error_text]
+        if len(prop_keys) > 1 and not matching_keys:
+            props_desc = ", ".join(repr(key) for key in prop_keys)
+            result = "{} (while setting {})".format(error_text, props_desc)
+            return result
+        if len(prop_keys) == 1 and prop_keys[0] not in error_text:
+            result = "{} (property {})".format(error_text, repr(prop_keys[0]))
+            return result
+        return error_text
+
+    @min_aedt_version("2025.2")
+    def _get_property(
+        self, prop: str, skipChecks: bool = False, isTable: bool = False
+    ) -> str | list[str] | list[float] | list[tuple[str, ...]]:
+        """Get a single property value.
+
+        Parameters
+        ----------
+        prop : str
+            Property name.
+        skipChecks : bool, optional
+            Whether to skip property visibility checks.
+        isTable : bool, optional
+            Whether the property is a table.
+
+        Returns
+        -------
+        str | list[str] | list[float] | list[tuple[str, ...]]
+            Property value.
+
+        Raises
+        ------
+        ValueError
+            If the property is not found or not available.
+        Exception
+            If an error occurs.
+        """
+        try:
+            props = self._oRevisionData.GetEmitNodeProperties(self._result_id, self._node_id, skipChecks)
+            kv_pairs = [prop.split("=") for prop in props]
+            selected_kv_pairs = [kv for kv in kv_pairs if kv[0].rstrip() == prop]
+            if len(selected_kv_pairs) < 1:
+                raise ValueError(f"Property {prop} not found or not available for {self._node_type} configuration.")
+
+            selected_kv_pair = selected_kv_pairs[0]
+            val = selected_kv_pair[1]
+            return self._parse_property_value(prop, val, isTable)
+        except ValueError:
+            raise
+        except Exception:
+            raise self._emit_obj.logger.aedt_messages.error_level[-1]
+
+    @min_aedt_version("2025.2")
+    def _set_property(self, prop, value, skipChecks: bool = False):
+        """Set a single property value.
+
+        Parameters
+        ----------
+        prop : str
+            Property name.
+        value : str | bool | float | list[float] | list[tuple[str, ...]]
+            Property value.
+        skipChecks : bool, optional
+            Whether to skip property visibility checks.
+
+        Raises
+        ------
+        ValueError
+            If the property is not found or not available.
+        Exception
+            If an error occurs.
+        """
+        prop_string = self._format_property_string(prop, value)
+        try:
+            self._oRevisionData.SetEmitNodeProperties(self._result_id, self._node_id, [prop_string], skipChecks)
+        except Exception:
+            raise ValueError(self._format_set_properties_error([prop_string], [prop]))
+
+    @staticmethod
+    def _string_to_value_units(value) -> tuple[float, str]:
+        """Splits a value into its numeric and unit components.
+
+        Parameters
+        ----------
+        value : str
+            A string containing a number and unit (e.g. '10 W').
+
+        Returns
+        -------
+        float
+            Numeric value.
+        str
+            Units.
+
+        Raises
+        ------
+        ValueError
+             If units are not valid.
+        """
+        # see if we can split it based on a space between number
+        # and units
+        vals = value.split(" ")
+        units = ""
+        if len(vals) == 2:
+            dec_val = float(vals[0])
+            units = vals[1].strip()
+            return dec_val, units
+        # no space before units, so find the first letter
+        for i, char in enumerate(value):
+            if char.isalpha():
+                dec_val = float(value[:i])
+                units = value[i:]
+                return dec_val, units
+        # maybe it's a string but with no units
+        try:
+            return float(value), units
+        except ValueError:
+            raise ValueError(f"{value} is not valid for this property.")
+
+    @min_aedt_version("2025.2")
+    def _convert_to_internal_units(self, value: float | str, unit_system: str) -> float:
+        """Takes a value and converts to internal EMIT units used for storing values.
+
+        Parameters
+        ----------
+        value : float or str
+            The specified value. If a float is specified, global unit settings are applied.
+            If a string is specified, it is split into value and units and validated.
+        unit_system : str
+            Type of units (e.g., FrequencyUnit, PowerUnit).
+
+        Returns
+        -------
+        float
+            Value in EMIT internal units (SI units where applicable).
+        """
+        if isinstance(value, float) or isinstance(value, int):
+            # unitless, so assume SI Units
+            if unit_system == "Data Rate":
+                # Data rate isn't included as part of PyAedt's unit class
+                units = "bps"
+            else:
+                units = consts.SI_UNITS[unit_system]
+        else:
+            value, units = self._string_to_value_units(value)
+            # make sure units were specified, if not use SI Units
+            if units == "":
+                if unit_system == "Data Rate":
+                    # Data rate isn't included as part of PyAedt unit class
+                    units = "bps"
+                else:
+                    units = consts.SI_UNITS[unit_system]
+            # verify the units are valid for the specified type
+            if units not in EMIT_VALID_UNITS[unit_system]:
+                raise ValueError(f"{units} are not valid units for this property.")
+
+        if unit_system == "Data Rate":
+            converted_value = data_rate_conv(value, units, True)
+        else:
+            converted_value = consts.unit_converter(value, unit_system, units, EMIT_INTERNAL_UNITS[unit_system])
+        return converted_value
+
+    @staticmethod
+    def _convert_from_internal_units(value: float, unit_system: str) -> float:
+        """Takes a value and converts from internal EMIT units to SI units.
+
+        Parameters
+        ----------
+        value : float
+            The specified value.
+        unit_system : str
+            Type of units (e.g., FrequencyUnit, PowerUnit).
+
+        Returns
+        -------
+        float
+            Value in SI units.
+        """
+        # get the SI units
+        if unit_system == "Data Rate":
+            units = "bps"
+            converted_value = data_rate_conv(value, units, False)
+        else:
+            units = consts.SI_UNITS[unit_system]
+            converted_value = consts.unit_converter(value, unit_system, EMIT_INTERNAL_UNITS[unit_system], units)
+        return converted_value
+
+    @min_aedt_version("2025.2")
+    def _delete(self) -> None:
+        """Deletes the current node (component)."""
+        if self.get_is_component():
+            self._oRevisionData.DeleteEmitComponent(self._result_id, self._node_id)
+        else:
+            self._oRevisionData.DeleteEmitNode(self._result_id, self._node_id)
+
+    @min_aedt_version("2025.2")
+    def _rename(self, requested_name: str) -> str:
+        """Renames the node/component.
+
+        .. deprecated: 0.21.3
+            Use name property instead
+
+        Parameters
+        ----------
+        requested_name : str
+            New name for the node/component.
+
+        Returns
+        -------
+        str
+            New name of the node/component.
+
+        Raises
+        ------
+        ValueError
+            If the node is read-only and cannot be renamed.
+        """
+        warnings.warn("This method is deprecated in 0.21.3. Use the name property instead.", DeprecationWarning)
+        self.name = requested_name
+
+        return self.name
+
+    @min_aedt_version("2025.2")
+    def _duplicate(self: T, new_name: str = "") -> T:
+        """Duplicate component using oEditor's Copy/Paste.
+        New component is placed under existing components in the schematic window.
+
+        Parameters
+        ----------
+        self : EmitNode
+            The component node to duplicate
+        new_name : str, optional
+            Name for the duplicated component. If empty, AEDT auto-generates a name.
+            if new_name is the same as an existing component, adds an integer to differentiate from existing names.
+
+        Returns
+        -------
+        EmitNode
+            The duplicated component node
+
+        Raises
+        ------
+        NotImplementedError
+            when self is not a component.  Should avoid calls on BandNodes, or other non components
+        """
+        if not self.get_is_component():
+            raise NotImplementedError("This method is not implemented yet.")
+        emit_design = self._emit_obj
+        oEditor = emit_design._oeditor
+
+        self_bb = oEditor.GetComponentBoundingBox(self.name)  # [[xBottom,yBottom],[width,height]] in meters
+        offset_y = -0.00508 - self_bb[1][1]  # 0.00508meters == 200mil which is the height of a radio
+        offset_x = self_bb[1][0] / 2
+
+        # Get all components before duplication
+        all_components = oEditor.GetAllComponents()
+
+        # Get the original component location
+        orig_location = self_bb[0]
+
+        # offset for paste
+        min_y = float("inf")
+        for comp_name in all_components:
+            location = oEditor.GetComponentLocation(comp_name)
+            if location[1] < min_y:
+                min_y = location[1]
+
+        # Calculate paste position (using lowest y + offset)
+        paste_x = orig_location[0] + offset_x
+        paste_y = min_y + offset_y
+
+        # Copy the component
+        oEditor.Copy(self.name)
+
+        # Paste at new location
+        oEditor.Paste(paste_x, paste_y)
+
+        # Get the new component node
+        # The pasted component gets an auto-incremented name
+        all_components_after = oEditor.GetAllComponents()
+        new_comp_name = [c for c in all_components_after if c not in all_components][0]
+
+        # Optionally rename if new_name provided.  Avoids collisions with existing names by incrementing counter
+        if new_name:
+            increment = 1
+            incremented_new_name = new_name
+            while incremented_new_name in all_components:
+                incremented_new_name = f"{incremented_new_name} {increment}"
+                increment += 1
+            # increment format matches how Paste increments names so its possible arrive at the same value
+            if new_comp_name != incremented_new_name:
+                oEditor.RenameComponent(new_comp_name, incremented_new_name)
+                new_comp_name = incremented_new_name
+
+        # Get the component EmitNode from revision
+        revision = emit_design.results.get_revision()
+        new_component = revision.get_component_node(new_comp_name)
+
+        return new_component
+
+    @min_aedt_version("2025.2")
+    def _import(self, file_path: str, import_type: str, create_antennas: bool = False):
+        """Imports a file into an Emit node.
+
+        Parameters
+        ----------
+        file_path : str
+            Full path to the file to import.
+        import_type : str
+            Type of import. Options are: CsvFile, TxMeasurement, RxMeasurement,
+            SpectralData, TouchstoneCoupling, CAD.
+        create_antennas : bool, optional
+            Whether to automatically create antennas for any mounting points
+            defined in the CAD file (only applicable to gltf/glb files).
+
+        Returns
+        -------
+        node: EmitNode
+            The node.
+        """
+        try:
+            if import_type == "CAD":
+                if int(self._emit_obj.aedt_env_variable[-3:]) >= 271:
+                    node_id = self._oRevisionData.EmitNodeImport(
+                        self._result_id, self._node_id, file_path, import_type, create_antennas
+                    )
+                else:
+                    node_id = self._oRevisionData.EmitNodeImport(self._result_id, self._node_id, file_path, import_type)
+            else:
+                node_id = self._oRevisionData.EmitNodeImport(self._result_id, self._node_id, file_path, import_type)
+        except Exception as e:
+            raise Exception(f'Failed to import "{file_path}" as "{import_type}": {e}') from e
+        return self._get_node(node_id)
+
+    @min_aedt_version("2025.2")
+    def _export_model(self, file_path: str) -> None:
+        """Exports an Emit node's model to a file.
+
+        Parameters
+        ----------
+        file_path : str
+            Full path to export the data to.
+        """
+        self._oRevisionData.EmitExportModel(self._result_id, self._node_id, file_path)
+
+    @min_aedt_version("2027.1")
+    def _export_to_csv(self, file_path: str, keys: str, values: str) -> None:
+        """Exports an Emit node's trace data to a CSV file.
+
+        Parameters
+        ----------
+        file_path : str
+            Full path to export the data to.
+        keys : str
+            Keys to export the data for.
+        values : str
+            Values to export the data for.
+
+        Returns
+        -------
+        str
+            The exported data as a string if no file path is provided.
+        """
+        try:
+            data = self._oRevisionData.ExportTraceData(self._result_id, self.name, file_path, ",", keys, values)
+            return data
+        except Exception as e:
+            raise Exception(f'Failed to export "{file_path}" as CSV: {e}') from e
+
+    @min_aedt_version("2027.1")
+    @requires_graphical_dependency("matplotlib")
+    def _plot(self, keys: str, values: str) -> None:
+        """Plots an Emit node's trace data using matplotlib.
+
+        Parameters
+        ----------
+        keys : str
+            Keys to export the data for.
+        values : str
+            Values to export the data for.
+
+        Returns
+        -------
+        matplotlib.pyplot.Figure
+            The plot figure with frequency in MHz.
+        """
+        import matplotlib.pyplot as plt
+
+        try:
+            csv_data = self._oRevisionData.ExportTraceData(self._result_id, self.name, "", ",", keys, values)
+        except Exception as e:
+            raise Exception(f"Failed to retrieve trace data for plotting: {e}") from e
+
+        lines = [line for line in csv_data.strip().split("\n") if line.strip()]
+        if len(lines) < 2:
+            raise ValueError("Trace data has no plottable rows.")
+
+        x_vals = []
+        y_vals = []
+        for line in lines:
+            parts = line.split(",")
+            x_vals.append(float(parts[0]) / 1e6)  # convert to MHz
+            y_vals.append(float(parts[1]))
+
+        fig, ax = plt.subplots()
+        ax.plot(x_vals, y_vals)
+        ax.set_xlabel("Frequency (MHz)")
+        ax.set_ylabel("Amplitude (dB/dBm)")
+        ax.set_title(self.name)
+        ax.grid(True)
+        return fig
+
+    @min_aedt_version("2025.2")
+    def get_is_component(self) -> bool:
+        """Check if node is also a component.
+
+        Returns
+        -------
+        bool
+            ``True`` if the node is a component. ``False`` otherwise.
+        """
+        return self._is_component
+
+    @min_aedt_version("2025.2")
+    def _get_child_node_id(self, child_name: str) -> int:
+        """Returns the node ID for the specified child node.
+
+        Parameters
+        ----------
+        child_name : str
+            Short name of the desired child node.
+
+        Returns
+        -------
+        int
+            Unique ID assigned to the child node.
+        """
+        return self._oRevisionData.GetChildNodeID(self._result_id, self._node_id, child_name)
+
+    @min_aedt_version("2025.2")
+    def _is_column_data_table(self) -> bool:
+        """Returns true if the node uses column data tables.
+
+        Returns
+        -------
+        bool
+            True if the table is ColumnData, False otherwise.
+        """
+        # BB Emission Nodes can have ColumnData or NodeProp tables
+        # so handle them first
+        if self._node_type == "TxBbEmissionNode":
+            if self._get_property("Noise Behavior") == "BroadbandEquation":
+                return False
+            return True
+
+        try:
+            table_title = self._get_property("CDTableTitle", True)
+            if table_title == "":
+                # No ColumnData Table Title, so it's a NodePropTable
+                return False
+        except ValueError:
+            # Exception returned since "CDTableTitle" doesn't exist
+            # so it's a NodePropTable
+            return False
+        return True
+
+    @min_aedt_version("2025.2")
+    def _check_column_table_data(self, data):
+        """Converts user inputted int or string table data to SI units.
+
+        The table nodes affected are:
+        TxHarmonicNode, TxNbEmissionNode,
+        TxBbEmissionNode (except equation table), RxMixerProductNode,
+        RxSaturationNode, RxSelectivityNode.
+
+        Parameters
+        ----------
+        data : list of tuples
+            User inputted table data.
+
+        Returns
+        -------
+        list of tuples
+            Data converted to SI units.
+        """
+        exceptions = {
+            "TxHarmonicNode": {"Absolute": [None, "PowerUnit"], "Relative": [None, "Power (dBc)"]},
+            "TxNbEmissionNode": {
+                "Absolute": ["FrequencyUnit", "PowerUnit"],
+                "RelativeBandwidth": ["FrequencyUnit", "Attenuation (dB)"],
+            },
+            "TxBbEmissionNode": {
+                "Absolute": ["FrequencyUnit", "Amplitude (dBm/Hz)"],
+                "RelativeBandwidth": ["FrequencyUnit", "Amplitude (dBm/Hz)"],
+                "RelativeOffset": ["FrequencyUnit", "Amplitude (dBm/Hz)"],
+                "BroadbandEquation": ["FrequencyUnit (MHz)", "Amplitude (dBm/Hz)"],
+            },
+            "RxMixerProductNode": {"Absolute": [None, None, "PowerUnit"], "Relative": [None, None, "Power (dBc)"]},
+            "RxSaturationNode": ["FrequencyUnit", "PowerUnit"],
+            "RxSelectivityNode": ["FrequencyUnit", "Attenuation (dB)"],
+        }
+
+        # Grab table behavior and units based on dropdown selection
+        node_type = self._node_type
+        if node_type in exceptions:
+            if node_type in ["TxHarmonicNode", "TxNbEmissionNode", "TxBbEmissionNode", "RxMixerProductNode"]:
+                behavior_key = ""
+                if node_type == "TxHarmonicNode":
+                    behavior_key = "Harmonic Table Units"
+                elif node_type == "TxNbEmissionNode":
+                    behavior_key = "Narrowband Behavior"
+                elif node_type == "TxBbEmissionNode":
+                    behavior_key = "Noise Behavior"
+                elif node_type == "RxMixerProductNode":
+                    behavior_key = "Mixer Product Table Units"
+                behavior = self._get_property(behavior_key)
+                units = exceptions[node_type][behavior]
+            else:
+                units = exceptions[node_type]
+        else:
+            raise ValueError(f"No table exceptions defined for node type {node_type}.")
+
+        data_return = []
+        for row in data:
+            row_list = list(row)
+            for i, value in enumerate(row):
+                valid_unit = False
+                if isinstance(value, str):
+                    val, unit = self._string_to_value_units(value)
+                    if units[i] is not None and "(" in units[i]:
+                        # Handle columns with specific units in header
+                        input_unit = units[i][units[i].find("(") + 1 : units[i].find(")")]
+                        if input_unit == "MHz":
+                            row_list[i] = consts.unit_converter(val, "Frequency", unit, input_unit)
+                        elif unit != input_unit:
+                            raise ValueError(f"{unit} are not valid units for this property.")
+                        elif isinstance(val, (float, int)):
+                            row_list[i] = val
+                        else:
+                            raise ValueError(f"{value} is not valid for this property.")
+                    else:
+                        # Handle columns with SI units
+                        for unit_type, valid_units_list in EMIT_VALID_UNITS.items():
+                            if unit in valid_units_list:
+                                valid_unit = True
+                                unit_system = unit_type
+                                break
+                        if valid_unit:
+                            row_list[i] = self._convert_to_internal_units(value, unit_system)
+                        else:
+                            raise ValueError(f"{unit} is not valid for this property.")
+                else:
+                    # Handle numeric inputs
+                    row_list[i] = value
+            data_return.append(tuple(row_list))
+        return data_return
+
+    @min_aedt_version("2025.2")
+    def _check_valid_function(self, expr: str) -> None:
+        """Validates a function expression for use in table data.
+
+        Parameters
+        ----------
+        expr : str
+            The function expression to validate.
+
+        Raises
+        ------
+        ValueError
+            If the function expression is invalid.
+        """
+        try:
+            tree = ast.parse(expr, mode="eval")
+            validator = FunctionValidator()
+            validator.visit(tree)
+        except ValueError as e:
+            raise ValueError(f"Invalid function expression: {e}")
+        except Exception as e:
+            raise ValueError(f"Error parsing function expression: {e}")
+
+    @min_aedt_version("2025.2")
+    def _check_node_prop_table_data(self, data):
+        """Converts user inputted int or string table data to SI units or ColumnUnits.
+
+        The table nodes affected are:
+        SamplingNode, TxSpurNode,
+        RxSpurNode, TxBbEmissionNode (equation table only).
+
+        Parameters
+        ----------
+        data : list of tuples
+            User inputted table data.
+
+        Returns
+        -------
+        list of tuples
+            Data converted to SI units or ColumnUnits.
+        """
+        units = self._get_property("TableUnitTypes", True)
+        cols = self._get_property("TableColumns", True)
+
+        data_return = []
+        for row in data:
+            row_list = list(row)
+            if len(row) > len(units):
+                raise ValueError(f"Row {row} has more columns than expected ({len(units)}).")
+            for i, val in enumerate(row):
+                # Extract column unit if present in column header
+                col_unit = None
+                if "(" in cols[i]:
+                    col_unit = cols[i][cols[i].find("(") + 1 : cols[i].find(")")]
+
+                    # Update unit type based on column unit
+                    if col_unit in EMIT_VALID_UNITS["Frequency"]:
+                        units[i] = "FrequencyUnit"
+                    elif col_unit in EMIT_VALID_UNITS["Power"]:
+                        units[i] = "PowerUnit"
+
+                if col_unit is None:
+                    # Process values that are stored in SI units
+                    if isinstance(val, str):
+                        value, unit = self._string_to_value_units(val)
+                        if unit == "dBc":
+                            row_list[i] = value
+                        elif unit not in EMIT_VALID_UNITS[units[i][:-4]]:
+                            raise ValueError(f"{unit} is not valid for this property.")
+                        else:
+                            # row_list[i] = consts.unit_converter(value, units[i][:-4], input_unit, col_unit)
+                            row_list[i] = self._convert_to_internal_units(val, units[i][:-4])
+                    elif isinstance(val, (float, int)):
+                        row_list[i] = val
+                    else:
+                        raise ValueError(f"{val} is not valid for this property.")
+                else:
+                    input_unit = None
+                    if isinstance(val, str):
+                        # Check for function inputs (TxSpurNode, RxSpurNode, TxBbEmissionNode (equation table only))
+                        is_function = (
+                            any(op in val for op in EMIT_FN_ALLOWED_OPS)
+                            or any(fn in val for fn in EMIT_FN_ALLOWED_FUNCS)
+                            or any(var in val for var in EMIT_FN_ALLOWED_VARS)
+                        )
+                        if (
+                            i == 0
+                            and self._node_type in ["TxSpurNode", "RxSpurNode", "TxBbEmissionNode"]
+                            and is_function
+                        ):
+                            try:
+                                self._check_valid_function(val)
+                                row_list[i] = val
+                                continue
+                            except Exception:
+                                raise ValueError(f"{val} is not a valid function expression.")
+
+                        # Process input values and units
+                        s = val.strip().replace(" ", "")
+                        unit_index = s.find(next(filter(str.isalpha, s)))
+                        value = float(s[:unit_index])
+                        input_unit = s[unit_index:]
+                    else:
+                        # Value is numeric, so assume SI units
+                        value = float(val)
+                        if units[i] == "FrequencyUnit":
+                            input_unit = "Hz"
+                        elif units[i] == "PowerUnit":
+                            input_unit = "W"
+
+                    # Handle dBc and dBm/Hz units
+                    if input_unit is None or input_unit == "dBc" or input_unit == "dBm/Hz":
+                        row_list[i] = value
+                    elif input_unit not in EMIT_VALID_UNITS[units[i][:-4]]:
+                        raise ValueError(f"{input_unit} is not valid for this property.")
+                    else:
+                        row_list[i] = consts.unit_converter(value, units[i][:-4], input_unit, col_unit)
+
+            data_return.append(tuple(row_list))
+        return data_return
+
+    @min_aedt_version("2025.2")
+    def _get_table_data(self):
+        """Returns the node's table data.
+
+        Returns
+        -------
+        list of tuples
+            The node's table data as a list of tuples.
+            [(x1, y1, z1), (x2, y2, z2)]
+        """
+        try:
+            if self._is_column_data_table():
+                # Column Data tables
+                # Data formatted using compact string serialization
+                # with '|' separating rows and ';' separating columns
+                data = self._oRevisionData.GetTableData(self._result_id, self._node_id)
+                rows = data.split("|")
+                string_table = [tuple(row.split(";")) for row in rows if row]
+            else:
+                # Node Prop tables
+                # Data formatted using compact string serialization
+                # with ';' separating rows and '|' separating columns
+                table_key = self._get_property("TableKey", True)
+                string_table = self._get_property(table_key, True, True)
+
+            if len(string_table) == 0 or string_table == "":
+                return None
+
+            def try_float(val):
+                try:
+                    return float(val)
+                except ValueError:
+                    return val  # keep as string for non-numeric (e.g. equations)
+
+            table = [tuple(try_float(x) for x in t) for t in string_table]
+        except Exception as e:
+            print(f"Failed to get table data for node {self.name}. Error: {e}")
+        return table
+
+    @min_aedt_version("2025.2")
+    def _set_table_data(self, table):
+        """Sets the table data for the node.
+
+        Parameters
+        ----------
+        list of tuples
+            Data to populate the table with.
+            [(x1, y1, z1), (x2, y2, z2)]
+        """
+        try:
+            if self._is_column_data_table():
+                # Column Data tables
+                # Data formatted using compact string serialization
+                # with '|' separating rows and ';' separating columns
+                if self._node_type in [
+                    "TxHarmonicNode",
+                    "TxNbEmissionNode",
+                    "TxBbEmissionNode",
+                    "RxMixerProductNode",
+                    "RxSaturationNode",
+                    "RxSelectivityNode",
+                ]:
+                    table = self._check_column_table_data(table)
+                data = "|".join(";".join(map(str, row)) for row in table)
+                self._oRevisionData.SetTableData(self._result_id, self._node_id, data)
+            else:
+                # Node Prop tables
+                # Data formatted using compact string serialization
+                # with ';' separating rows and '|' separating columns
+                table = self._check_node_prop_table_data(table)
+                table_key = self._get_property("TableKey", True)
+                data = ";".join("|".join(map(str, row)) for row in table)
+                self._set_property(table_key, data, True)
+        except Exception as e:
+            raise ValueError(f"Failed to set table data for node {self.name}. Error: {e}")
+
+    @min_aedt_version("2025.2")
+    def _add_child_node(self, child_type, child_name=None):
+        """Creates a child node of the given type and name.
+
+        Parameters
+        ----------
+        child_type : EmitNode
+            Type of child node to create.
+        child_name : str, optional
+            Name to use for the child node. If None, a default name is used.
+
+        Returns
+        -------
+        node: EmitNode
+            The node.
+
+        Raises
+        ------
+        ValueError
+            If the specified child type is not allowed.
+        """
+        if not child_name:
+            child_name = f"{child_type}"
+
+        new_node = None
+        if child_type not in self.allowed_child_types:
+            raise ValueError(
+                f"Child type {child_type} is not allowed for this node. Allowed types are: {self.allowed_child_types}"
+            )
+        try:
+            new_id = self._oRevisionData.CreateEmitNode(self._result_id, self._node_id, child_name, child_type)
+            new_node = self._get_node(new_id)
+            if child_type == "Emitter" and new_node is not None:
+                from ansys.aedt.core.emit_core.nodes.emitter_node import EmitterNode
+
+                return EmitterNode(self._emit_obj, self._result_id, new_node._node_id)
+        except Exception as e:
+            print(f"Failed to add child node of type {child_type} to node {self.name}. Error: {e}")
+        return new_node

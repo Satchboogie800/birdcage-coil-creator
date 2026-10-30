@@ -1,0 +1,115 @@
+// Proto file representing hfss pi simulation setup settings
+
+syntax = "proto3";
+
+package ansys.api.edb.v1;
+
+import "ansys/api/edb/v1/edb_messages.proto";
+
+enum HFSSPIModelType
+{
+  HFSSPI_PCB = 0;
+  HFSSPI_PACKAGE = 1;
+  HFSSPI_RDL = 2;
+};
+
+// HFSSPI General settings
+service HFSSPIGeneralSettingsService {
+
+  // io_flags:
+  //   - cache
+  rpc GetHFSSPIModelType(EDBObjMessage) returns (HFSSPIModelTypeMessage) {}
+
+  // io_flags:
+  //   - buffer
+  rpc SetHFSSPIModelType(HFSSPIModelTypePropertyMessage) returns (google.protobuf.Empty) {}
+
+  // io_flags:
+  //   - cache
+  rpc GetUseAutoMeshRegion(EDBObjMessage) returns (google.protobuf.BoolValue) {}
+
+  // io_flags:
+  //   - buffer
+  rpc SetUseAutoMeshRegion(BoolPropertyMessage) returns (google.protobuf.Empty) {}
+
+  // io_flags:
+  //   - cache
+  rpc GetUseMeshRegion(EDBObjMessage) returns (google.protobuf.BoolValue) {}
+
+  // io_flags:
+  //   - buffer
+  rpc SetUseMeshRegion(BoolPropertyMessage) returns (google.protobuf.Empty) {}
+
+  // io_flags:
+  //   - cache
+  rpc GetMeshRegionName(EDBObjMessage) returns (google.protobuf.StringValue) {}
+
+  // io_flags:
+  //   - buffer
+  rpc SetMeshRegionName(StringPropertyMessage) returns (google.protobuf.Empty) {}
+}
+
+message HFSSPIModelTypeMessage {
+  HFSSPIModelType hfss_pi_model_type = 1;
+}
+
+message HFSSPIModelTypePropertyMessage {
+  EDBObjMessage target = 1;
+  HFSSPIModelType hfss_pi_model_type = 2;
+}
+
+// HFSSPI Advanced
+service HFSSPIAdvancedSettingsService {
+
+  // io_flags:
+  //   - cache
+  rpc GetICModeAutoResolution(EDBObjMessage) returns (google.protobuf.BoolValue) {}
+
+  // io_flags:
+  //   - buffer
+  rpc SetICModeAutoResolution(BoolPropertyMessage) returns (google.protobuf.Empty) {}
+
+  // io_flags:
+  //   - cache
+  rpc GetICModeLength(EDBObjMessage) returns (google.protobuf.StringValue) {}
+
+  // io_flags:
+  //   - buffer
+  rpc SetICModeLength(StringPropertyMessage) returns (google.protobuf.Empty) {}
+
+  // io_flags:
+  //   - cache
+  rpc GetSmallPlaneArea(EDBObjMessage) returns (google.protobuf.StringValue) {}
+
+  // io_flags:
+  //   - buffer
+  rpc SetSmallPlaneArea(StringPropertyMessage) returns (google.protobuf.Empty) {}
+
+  // io_flags:
+  //   - cache
+  rpc GetZeroMetalLayerThickness(EDBObjMessage) returns (google.protobuf.StringValue) {}
+
+  // io_flags:
+  //   - buffer
+  rpc SetZeroMetalLayerThickness(StringPropertyMessage) returns (google.protobuf.Empty) {}
+}
+
+// Solver settings
+service HFSSPISolverSettingsService {
+
+  // io_flags:
+  //   - cache
+  rpc GetEnhancedLowFrequencyAccuracy(EDBObjMessage) returns (google.protobuf.BoolValue) {}
+
+  // io_flags:
+  //   - buffer
+  rpc SetEnhancedLowFrequencyAccuracy(BoolPropertyMessage) returns (google.protobuf.Empty) {}
+
+  // io_flags:
+  //   - cache
+  rpc GetViaAreaCutoffCircElems(EDBObjMessage) returns (google.protobuf.StringValue) {}
+
+  // io_flags:
+  //   - buffer
+  rpc SetViaAreaCutoffCircElems(StringPropertyMessage) returns (google.protobuf.Empty) {}
+}

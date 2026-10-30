@@ -1,0 +1,2 @@
+[ansys.tools.protoc_helper.proto_provider]
+ansys.api.edb.v1 = ansys.api.edb.v1

@@ -1,0 +1,28 @@
+// Proto file representing the RLC Component Property class
+
+syntax = "proto3";
+
+// Package
+package ansys.api.edb.v1;
+
+// Imports
+import "ansys/api/edb/v1/edb_messages.proto";
+
+// RLC Component Property service definition
+service RLCComponentPropertyService {
+  // summary: Create RLC Component Property
+  // io_flags:
+  //   - buffer
+  //   - returns_future
+  //   - write_no_cache_invalidation
+  rpc Create(google.protobuf.Empty) returns (EDBObjMessage) {}
+
+  // summary: Get enabled
+  // io_flags:
+  //   - cache
+  rpc GetEnabled(EDBObjMessage) returns (google.protobuf.BoolValue) {}
+
+  // io_flags:
+  //   - buffer
+  rpc SetEnabled(BoolPropertyMessage) returns (google.protobuf.Empty) {}
+}

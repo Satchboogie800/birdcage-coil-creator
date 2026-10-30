@@ -1,0 +1,547 @@
+# -*- coding: utf-8 -*-
+#
+# Copyright (C) 2021 - 2026 Synopsys, Inc. and ANSYS, Inc. All rights reserved.
+# SPDX-License-Identifier: MIT
+#
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+from ctypes import POINTER
+from ctypes import byref
+from ctypes import c_bool
+from ctypes import c_char_p
+from ctypes import c_int
+from ctypes import create_string_buffer
+from enum import Enum
+
+import ansys.aedt.core
+
+
+class ComplexTerminationDefinition(Enum):
+    """Selects type of complex presentation.
+
+    **Attributes:**
+
+    - POLAR: Represents polar definition.
+    - CARTESIAN: Represents Cartesian definition.
+    - PARALLEL: Represents parallel definition with real entry parallel to imaginary entry.
+    - REAL: Represents only real impedance definition.
+
+    Examples
+    --------
+    >>> from ansys.aedt.core.filtersolutions_core.lumped_termination_impedance_table import ComplexTerminationDefinition
+    >>> ComplexTerminationDefinition.POLAR
+
+    """
+
+    POLAR = 0
+    """Polar option."""
+    CARTESIAN = 1
+    """Cartesian option."""
+    PARALLEL = 2
+    """Parallel option."""
+    REAL = 3
+    """Real option."""
+
+
+class ComplexReactanceType(Enum):
+    """Selects type of complex impedance as reactance, equivalent inductance, or equivalent capacitance.
+
+    **Attributes:**
+
+    - REAC: Represents pure reactance of complex impedance.
+    - IND: Represents equivalent inductance in henries.
+    - CAP: Represents equivalent capacitance in farads.
+
+    Examples
+    --------
+    >>> from ansys.aedt.core.filtersolutions_core.lumped_termination_impedance_table import ComplexReactanceType
+    >>> ComplexReactanceType.IND
+
+    """
+
+    REAC = 0
+    """Reac option."""
+    IND = 1
+    """Ind option."""
+    CAP = 2
+    """Cap option."""
+
+
+class TerminationType(Enum):
+    """Selects either source or load complex impedance table.
+
+    **Attributes:**
+
+    - SOURCE: Represents source impedenace table.
+    - LOAD: Represents load impedenace table.
+
+    Examples
+    --------
+    >>> from ansys.aedt.core.filtersolutions_core.lumped_termination_impedance_table import TerminationType
+    >>> TerminationType.SOURCE
+
+    """
+
+    SOURCE = 0
+    """Source option."""
+    LOAD = 1
+    """Load option."""
+
+
+class LumpedTerminationImpedance:
+    """Manipulates access to the entries of source and load complex impedance table.
+
+    This class allows you to enter, edit, or remove the entries of source and load complex impedance table.
+
+    Examples
+    --------
+    >>> from ansys.aedt.core import FilterSolutions
+    >>> design = FilterSolutions.LumpedDesign(version="2026.1")
+    >>> design.source_impedance_table.row_count
+
+    """
+
+    def __init__(self, table_type) -> None:
+        self._dll = ansys.aedt.core.filtersolutions_core._dll_interface()._dll
+        self._dll_interface = ansys.aedt.core.filtersolutions_core._dll_interface()
+        self._define_termination_impedance_dll_functions()
+        self.table_type = table_type
+
+    def _define_termination_impedance_dll_functions(self) -> None:
+        """Define C++ API DLL functions."""
+        self._dll.getComplexTableRowCount.argtypes = [POINTER(c_int), c_bool]
+        self._dll.getComplexTableRowCount.restype = c_int
+
+        self._dll.getComplexTableRow.argtypes = [
+            c_int,
+            c_char_p,
+            c_char_p,
+            c_char_p,
+            c_bool,
+            c_int,
+        ]
+        self._dll.getComplexTableRow.restype = c_int
+
+        self._dll.updateComplexTableRow.argtypes = [
+            c_int,
+            c_char_p,
+            c_char_p,
+            c_char_p,
+            c_bool,
+        ]
+        self._dll.updateComplexTableRow.restype = c_int
+
+        self._dll.appendComplexTableRow.argtypes = [
+            c_char_p,
+            c_char_p,
+            c_char_p,
+            c_bool,
+        ]
+        self._dll.appendComplexTableRow.restype = c_int
+
+        self._dll.insertComplexTableRow.argtypes = [
+            c_int,
+            c_char_p,
+            c_char_p,
+            c_char_p,
+            c_bool,
+        ]
+        self._dll.insertComplexTableRow.restype = c_int
+
+        self._dll.removeComplexTableRow.argtypes = [c_int, c_bool]
+        self._dll.removeComplexTableRow.restype = c_int
+
+        self._dll.setLumpedComplexDefinition.argtypes = [c_char_p, c_bool]
+        self._dll.setLumpedComplexDefinition.restype = c_int
+        self._dll.getLumpedComplexDefinition.argtypes = [c_char_p, c_bool, c_int]
+        self._dll.getLumpedComplexDefinition.restype = c_int
+
+        self._dll.setLumpedComplexReactanceType.argtypes = [c_char_p, c_bool]
+        self._dll.setLumpedComplexReactanceType.restype = c_int
+        self._dll.getLumpedComplexReactanceType.argtypes = [c_char_p, c_bool, c_int]
+        self._dll.getLumpedComplexReactanceType.restype = c_int
+
+        self._dll.setLumpedComplexElementTuneEnabled.argtype = c_bool
+        self._dll.setLumpedComplexElementTuneEnabled.restype = c_int
+        self._dll.getLumpedComplexElementTuneEnabled.argtype = POINTER(c_bool)
+        self._dll.getLumpedComplexElementTuneEnabled.restype = c_int
+
+        self._dll.setLumpedComplexImpCompensateEnabled.argtypes = [c_bool, c_bool]
+        self._dll.setLumpedComplexImpCompensateEnabled.restype = c_int
+        self._dll.getLumpedComplexImpCompensateEnabled.argtypes = [
+            POINTER(c_bool),
+            c_bool,
+        ]
+        self._dll.getLumpedComplexImpCompensateEnabled.restype = c_int
+
+        self._dll.setLumpedComplexCompOrder.argtypes = [c_int, c_bool]
+        self._dll.setLumpedComplexCompOrder.restype = c_int
+        self._dll.getLumpedComplexCompOrder.argtypes = [POINTER(c_int), c_bool]
+        self._dll.getLumpedComplexCompOrder.restype = c_int
+
+    def _bytes_or_none(self, str_value):
+        if str_value:
+            return bytes(str_value, "ascii")
+        return None
+
+    def table_type_to_bool(self) -> bool:
+        """Set a flag to recognize source and load complex table.
+
+        Returns
+        -------
+        bool
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.filtersolutions import LumpedDesign
+        >>> design = LumpedDesign("2026.1")
+        >>> design.load_impedance_table.table_type_to_bool()
+
+        """
+        if self.table_type.value == TerminationType.SOURCE.value:
+            return False
+        elif self.table_type.value == TerminationType.LOAD.value:
+            return True
+
+    @property
+    def row_count(self) -> int:
+        """Count of the accumulated complex impedances in the complex impedances's table.
+
+        The default is ``3``.
+
+        Returns
+        -------
+        int
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import FilterSolutions
+        >>> design = FilterSolutions.LumpedDesign(version="2026.1")
+        >>> design.source_impedance_table.row_count
+
+        """
+        table_row_count = c_int()
+        status = self._dll.getComplexTableRowCount(byref(table_row_count), self.table_type_to_bool())
+        self._dll_interface.raise_error(status)
+        return int(table_row_count.value)
+
+    def row(self, row_index: int) -> tuple[str, str, str]:
+        """Get frequency and complex impedance values from a row in the complex impedance table.
+
+        Parameters
+        ----------
+        row_index: int
+            Row index on complex impedance table, starting at ``0`` and with a maximum value of ``149``.
+
+        Returns
+        -------
+        tuple
+            The tuple contains three strings. The first is the frequency value,
+            the second is the real part of the complex impedance,
+            and the third is the imaginary part of the complex impedance.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.filtersolutions import LumpedDesign
+        >>> design = LumpedDesign("2026.1")
+        >>> design.topology.complex_termination = True
+        >>> design.source_impedance_table.row(0)
+
+        """
+        frequency_value_buffer = create_string_buffer(100)
+        real_value_buffer = create_string_buffer(100)
+        imag_value_buffer = create_string_buffer(100)
+        status = self._dll.getComplexTableRow(
+            row_index,
+            frequency_value_buffer,
+            real_value_buffer,
+            imag_value_buffer,
+            self.table_type_to_bool(),
+            100,
+        )
+        self._dll_interface.raise_error(status)
+        frequency_value_string = frequency_value_buffer.value.decode("utf-8")
+        real_value_string = real_value_buffer.value.decode("utf-8")
+        imag_value_string = imag_value_buffer.value.decode("utf-8")
+        return frequency_value_string, real_value_string, imag_value_string
+
+    def update_row(self, row_index: int, frequency: str = None, real: str = None, imag: str = None) -> None:
+        """Update frequency and complex impedance at a specified index in the complex impedance table.
+
+        Parameters
+        ----------
+        row_index: int
+            Row index on complex impedance table, starting at ``0`` and with a maximum value of ``149``.
+        frequency: str, optional
+            The frequency value to update. If not specified, it remains unchanged.
+        real: str, optional
+            The real part of the complex impedance to update. If not specified, it remains unchanged.
+        imag: str, optional
+            The imaginary part of the complex impedance to update. If not specified, it remains unchanged.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.filtersolutions import LumpedDesign
+        >>> design = LumpedDesign("2026.1")
+        >>> design.topology.complex_termination = True
+        >>> design.source_impedance_table.update_row(0, "2G", "50", "0")
+
+        """
+        status = self._dll.updateComplexTableRow(
+            row_index,
+            self._bytes_or_none(frequency),
+            self._bytes_or_none(real),
+            self._bytes_or_none(imag),
+            self.table_type_to_bool(),
+        )
+        self._dll_interface.raise_error(status)
+
+    def append_row(self, frequency: str = None, real: str = None, imag: str = None) -> None:
+        """Append frequency and complex impedance values to the last row of
+        both the source and load complex impedance table.
+
+
+        Parameters
+        ----------
+        frequency: str
+            The frequency value to append.
+        real: str
+            The real part of the complex impedance to append.
+        imag: str
+            The imaginary part of the complex impedance to append.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.filtersolutions import LumpedDesign
+        >>> design = LumpedDesign("2026.1")
+        >>> design.topology.complex_termination = True
+        >>> design.source_impedance_table.append_row("100M", "10", "20")
+
+        """
+        status = self._dll.appendComplexTableRow(
+            self._bytes_or_none(frequency),
+            self._bytes_or_none(real),
+            self._bytes_or_none(imag),
+            self.table_type_to_bool(),
+        )
+        self._dll_interface.raise_error(status)
+
+    def insert_row(self, row_index: int, frequency: str = None, real: str = None, imag: str = None) -> None:
+        """Insert frequency and complex impedance values at a specified index in the complex impedance table.
+
+        Parameters
+        ----------
+        row_index : int
+            Row index in the complex impedance table, starting at ``0`` and with a maximum value of ``149``.
+        frequency : str
+            The frequency value to insert.
+        real : str
+            The real part of the complex impedance to insert.
+        imag : str
+            The imaginary part of the complex impedance to insert.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.filtersolutions import LumpedDesign
+        >>> design = LumpedDesign("2026.1")
+        >>> design.topology.complex_termination = True
+        >>> design.source_impedance_table.insert_row(0, "2G", "50", "0")
+
+        """
+        status = self._dll.insertComplexTableRow(
+            row_index,
+            self._bytes_or_none(frequency),
+            self._bytes_or_none(real),
+            self._bytes_or_none(imag),
+            self.table_type_to_bool(),
+        )
+        self._dll_interface.raise_error(status)
+
+    def remove_row(self, row_index: int) -> None:
+        """Remove frequency and complex impedance at a specified index from the complex impedance table.
+
+        Parameters
+        ----------
+        row_index : int
+            Row index in the complex impedance table, starting at ``0`` and with a maximum value of ``149``.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.filtersolutions import LumpedDesign
+        >>> design = LumpedDesign("2026.1")
+        >>> design.topology.complex_termination = True
+        >>> design.source_impedance_table.remove_row(0)
+
+        """
+        status = self._dll.removeComplexTableRow(row_index, self.table_type_to_bool())
+        self._dll_interface.raise_error(status)
+
+    @property
+    def complex_definition(self) -> ComplexTerminationDefinition:
+        """Definition type of complex impedance in the complex impedance table.
+        The default is ``Cartesian``.
+
+        Returns
+        -------
+        :enum:`ComplexTerminationDefinition`
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import FilterSolutions
+        >>> from ansys.aedt.core.filtersolutions_core.lumped_termination_impedance_table import (
+        ...     ComplexTerminationDefinition,
+        ... )
+        >>> design = FilterSolutions.LumpedDesign(version="2026.1")
+        >>> design.source_impedance_table.complex_definition = ComplexTerminationDefinition.POLAR
+        >>> design.source_impedance_table.complex_definition
+
+        """
+        type_string_buffer = create_string_buffer(100)
+        status = self._dll.getLumpedComplexDefinition(
+            type_string_buffer,
+            self.table_type_to_bool(),
+            100,
+        )
+        self._dll_interface.raise_error(status)
+        type_string = type_string_buffer.value.decode("utf-8")
+        return self._dll_interface.string_to_enum(ComplexTerminationDefinition, type_string)
+
+    @complex_definition.setter
+    def complex_definition(self, complex_definition: ComplexTerminationDefinition) -> None:
+        string_value = self._dll_interface.enum_to_string(complex_definition)
+        string_bytes_value = bytes(string_value, "ascii")
+        status = self._dll.setLumpedComplexDefinition(string_bytes_value, self.table_type_to_bool())
+        self._dll_interface.raise_error(status)
+
+    @property
+    def reactance_type(self) -> ComplexReactanceType:
+        """Reactance type of complex impedance in the complex impedance table.
+
+        The default is ``reactance``.
+
+        Returns
+        -------
+        :enum:`ComplexReactanceType`
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import FilterSolutions
+        >>> from ansys.aedt.core.filtersolutions_core.lumped_termination_impedance_table import ComplexReactanceType
+        >>> design = FilterSolutions.LumpedDesign(version="2026.1")
+        >>> design.source_impedance_table.reactance_type = ComplexReactanceType.IND
+        >>> design.source_impedance_table.reactance_type
+
+        """
+        type_string_buffer = create_string_buffer(100)
+        status = self._dll.getLumpedComplexReactanceType(
+            type_string_buffer,
+            self.table_type_to_bool(),
+            100,
+        )
+        self._dll_interface.raise_error(status)
+        type_string = type_string_buffer.value.decode("utf-8")
+        return self._dll_interface.string_to_enum(ComplexReactanceType, type_string)
+
+    @reactance_type.setter
+    def reactance_type(self, reactance_type: ComplexReactanceType) -> None:
+        string_value = self._dll_interface.enum_to_string(reactance_type)
+        string_bytes_value = bytes(string_value, "ascii")
+        status = self._dll.setLumpedComplexReactanceType(string_bytes_value, self.table_type_to_bool())
+        self._dll_interface.raise_error(status)
+
+    @property
+    def element_tune_enabled(self) -> bool:
+        """Flag indicating if the element tune is enabled.
+
+        Returns
+        -------
+        bool
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.filtersolutions import LumpedDesign
+        >>> design = LumpedDesign("2026.1")
+        >>> design.topology.complex_termination = True
+        >>> design.source_impedance_table.element_tune_enabled = False
+
+        """
+        element_tune_enabled = c_bool()
+        status = self._dll.getLumpedComplexElementTuneEnabled(byref(element_tune_enabled))
+        self._dll_interface.raise_error(status)
+        return bool(element_tune_enabled.value)
+
+    @element_tune_enabled.setter
+    def element_tune_enabled(self, element_tune_enabled: bool) -> None:
+        status = self._dll.setLumpedComplexElementTuneEnabled(element_tune_enabled)
+        self._dll_interface.raise_error(status)
+
+    @property
+    def compensation_enabled(self) -> bool:
+        """Flag indicating if the impedance compensation is enabled.
+
+        Returns
+        -------
+        bool
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.filtersolutions import LumpedDesign
+        >>> design = LumpedDesign("2026.1")
+        >>> design.topology.complex_termination = True
+        >>> design.load_impedance_table.compensation_enabled = True
+
+        """
+        compensation_enabled = c_bool()
+        status = self._dll.getLumpedComplexImpCompensateEnabled(byref(compensation_enabled), self.table_type_to_bool())
+        self._dll_interface.raise_error(status)
+        return bool(compensation_enabled.value)
+
+    @compensation_enabled.setter
+    def compensation_enabled(self, compensation_enabled: bool) -> None:
+        status = self._dll.setLumpedComplexImpCompensateEnabled(compensation_enabled, self.table_type_to_bool())
+        self._dll_interface.raise_error(status)
+
+    @property
+    def compensation_order(self) -> int:
+        """Order of impedance compensation.
+
+        The default is` ``2``.
+
+        Returns
+        -------
+        int
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.filtersolutions import LumpedDesign
+        >>> design = LumpedDesign("2026.1")
+        >>> design.topology.complex_termination = True
+        >>> design.load_impedance_table.compensation_order = 3
+
+        """
+        compensation_order = c_int()
+        status = self._dll.getLumpedComplexCompOrder(byref(compensation_order), self.table_type_to_bool())
+        self._dll_interface.raise_error(status)
+        return int(compensation_order.value)
+
+    @compensation_order.setter
+    def compensation_order(self, compensation_order: int) -> None:
+        status = self._dll.setLumpedComplexCompOrder(compensation_order, self.table_type_to_bool())
+        self._dll_interface.raise_error(status)

@@ -1,0 +1,144 @@
+// Proto file representing the EDB Primitive class
+
+syntax = "proto3";
+
+// Package
+package ansys.api.edb.v1;
+
+// Imports
+import "ansys/api/edb/v1/edb_messages.proto";
+import "ansys/api/edb/v1/refs.proto";
+
+// Primitive type enum
+enum PrimitiveType {
+  RECTANGLE = 0;
+  CIRCLE = 1;
+  POLYGON = 2;
+  PATH = 3;
+  BONDWIRE = 4;
+  PRIM_PLUGIN = 5;
+  TEXT = 6;
+  PATH_3D = 7;
+  BOARD_BEND = 8;
+  PRIM_INST_COLLECTION = 11;
+  INVALID_TYPE = 9;
+}
+
+// Primitive service definition
+service PrimitiveService {
+  // summary: Gets the primitive type of this primitive
+  // io_flags:
+  //   - cache
+  rpc GetPrimitiveType (EDBObjMessage) returns (PrimitiveTypeMessage) {}
+
+  // summary: Adds a void
+  // io_flags:
+  //   - buffer
+  rpc AddVoid (PrimitiveVoidCreationMessage) returns (google.protobuf.Empty) {}
+
+  // summary: Sets HFSS Properties
+  // io_flags:
+  //   - buffer
+  rpc SetHfssProp (PrimitiveHfssPropMessage) returns (google.protobuf.Empty) {}
+
+  // summary: Get Layer
+  // io_flags:
+  //   - cache
+  rpc GetLayer (EDBObjMessage) returns (EDBObjMessage) {}
+
+  // summary: Set Layer
+  // io_flags:
+  //   - buffer
+  rpc SetLayer (SetLayerMessage) returns (google.protobuf.Empty) {}
+
+  // summary: Get IsNegative
+  // io_flags:
+  //   - cache
+  rpc GetIsNegative (EDBObjMessage) returns (google.protobuf.BoolValue) {}
+
+  // summary: Set IsNegative
+  // io_flags:
+  //   - buffer
+  rpc SetIsNegative (SetIsNegativeMessage) returns (google.protobuf.Empty) {}
+
+  // summary: Get isVoid
+  // io_flags:
+  //   - cache
+  rpc IsVoid (EDBObjMessage) returns (google.protobuf.BoolValue) {}
+
+  // summary: Get HasVoids
+  // io_flags:
+  //   - cache
+  rpc HasVoids (EDBObjMessage) returns (google.protobuf.BoolValue) {}
+
+  // summary: Gets an iterator of the voids in the Primitive
+  // io_flags:
+  //   - read_no_cache
+  rpc Voids (EDBObjMessage) returns (EDBObjCollectionMessage) {}
+
+  // summary: Streams an iterator of the voids in the Primitive
+  // io_flags:
+  //   - read_no_cache
+  rpc StreamVoids (EDBObjMessage) returns (stream EDBObjCollectionMessage) {}
+
+  // summary: Get Owner
+  // io_flags:
+  //   - cache
+  rpc GetOwner (EDBObjMessage) returns (EDBObjMessage) {}
+
+  // summary: Get isParametrized
+  // io_flags:
+  //   - cache
+  rpc IsParameterized (EDBObjMessage) returns (google.protobuf.BoolValue) {}
+
+  // summary: Get HFSS Properties
+  // io_flags:
+  //   - cache
+  rpc GetHfssProp (EDBObjMessage) returns (GetPrimitiveHfssPropMessage) {}
+
+  // summary: Remove HFSS Properties
+  // io_flags:
+  //   - buffer
+  rpc RemoveHfssProp (EDBObjMessage) returns (google.protobuf.Empty) {}
+
+  // summary: Get Is Zone Primitive
+  // io_flags:
+  //   - cache
+  rpc IsZonePrimitive (EDBObjMessage) returns (google.protobuf.BoolValue) {}
+
+  // summary: Make primitive a zone primitive in the specified zone
+  // io_flags:
+  //   - buffer
+  rpc MakeZonePrimitive (IntPropertyMessage) returns (google.protobuf.Empty) {}
+}
+
+// Message for GetPrimitiveType
+message PrimitiveTypeMessage {
+  PrimitiveType type = 1;
+}
+
+message PrimitiveVoidCreationMessage {
+  EDBObjMessage target = 1;
+  EDBObjMessage hole = 2;
+}
+
+message PrimitiveHfssPropMessage {
+  EDBObjMessage target = 1;
+  string material_name = 2;
+  bool solve_inside = 3;
+}
+
+message GetPrimitiveHfssPropMessage {
+  string material_name = 1;
+  bool solve_inside = 2;
+}
+
+message SetLayerMessage {
+  EDBObjMessage target = 1;
+  LayerRefMessage layer = 2;
+}
+
+message SetIsNegativeMessage {
+  EDBObjMessage target = 1;
+  bool is_negative = 2;
+}

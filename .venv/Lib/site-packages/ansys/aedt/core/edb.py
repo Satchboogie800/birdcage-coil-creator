@@ -1,0 +1,175 @@
+# -*- coding: utf-8 -*-
+#
+# Copyright (C) 2021 - 2026 Synopsys, Inc. and ANSYS, Inc. All rights reserved.
+# SPDX-License-Identifier: MIT
+#
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+from typing import TYPE_CHECKING
+from typing import Any
+
+# NOTE: Do not perform pyedb imports out of TYPECHECKING or the methods below to avoid conda issues.
+# Currently pyedb isn't part of conda and importing it at the top level of The module leads to
+# errors when importing ansys.aedt.core
+if TYPE_CHECKING:
+    from pyedb.generic.design_types import Edb as EdbApp
+    from pyedb.generic.design_types import Siwave
+
+from ansys.aedt.core.generic.settings import settings
+from ansys.aedt.core.internal.aedt_versions import aedt_versions
+
+log = settings.logger
+"""Value for log."""
+
+
+# lazy imports
+def Edb(
+    edbpath: str | None = None,
+    cellname: str | None = None,
+    isreadonly: bool | None = False,
+    version: str | None = None,
+    isaedtowned: bool | None = False,
+    oproject: Any | None = None,
+    student_version: bool | None = False,
+    use_ppe: bool | None = False,
+    technology_file: str | None = None,
+) -> "EdbApp":
+    """Provides the EDB application interface.
+
+    The module inherits all objects that belong to EDB.
+
+    Parameters
+    ----------
+    edbpath : str, optional
+        Full path to the ``aedb`` folder. The variable can also contain
+        the path to a layout to import. Allowed formats are BRD,
+        XML (IPC2581), GDS, and DXF. The default is ``None``.
+        For GDS import, the Ansys control file (also XML) should have the same
+        name as the GDS file. Only the file extension differs.
+    cellname : str, optional
+        Name of the cell to select. The default is ``None``.
+    isreadonly : bool, optional
+        Whether to open EBD in read-only mode when it is
+        owned by HFSS 3D Layout. The default is ``False``.
+    version : str, optional
+        Version of EDB to use. The default is ``"2021.2"``.
+    isaedtowned : bool, optional
+        Whether to launch EDB from HFSS 3D Layout. The
+        default is ``False``.
+    oproject : optional
+        Reference to the AEDT project object.
+    student_version : bool, optional
+        Whether to open the AEDT student version. The default is ``False.``
+    technology_file : str, optional
+        Full path to technology file to be converted to xml before importing or xml. Supported by GDS format only.
+
+    Returns
+    -------
+    :class:`pyedb.dotnet.edb.Edb`, :class:`pyedb.grpc.edb.Edb`
+
+    Examples
+    --------
+    Create an ``Edb`` object and a new EDB cell.
+
+    >>> from pyedb import Edb
+    >>> app = Edb()
+
+    Add a new variable named "s1" to the ``Edb`` instance.
+
+    >>> app["s1"] = "0.25 mm"
+    >>> app["s1"].tofloat
+    >>> 0.00025
+    >>> app["s1"].tostring
+    >>> "0.25mm"
+
+    or add a new parameter with description:
+
+    >>> app["s2"] = ["20um", "Spacing between traces"]
+    >>> app["s2"].value
+    >>> 1.9999999999999998e-05
+    >>> app["s2"].description
+    >>> "Spacing between traces"
+
+
+    Create an ``Edb`` object and open the specified project.
+
+    >>> app = Edb("myfile.aedb")
+
+    Create an ``Edb`` object from GDS and control files.
+    The XML control file resides in the same directory as the GDS file: (myfile.xml).
+
+    >>> app = Edb("/path/to/file/myfile.gds")
+
+    """
+    from pyedb.generic.design_types import Edb as EdbApp
+
+    if version is not None:
+        # Clear global state before initialization
+        settings.aedt_version = None
+
+    if not settings.aedt_version:  # pragma: no cover
+        # If no version is specified, use the passed version or current stable version of AEDT.
+        if version:
+            settings.aedt_version = version
+        else:
+            settings.aedt_version = aedt_versions.current_version
+
+    if settings.pyedb_use_grpc is None:
+        if settings.aedt_version >= "2026.1":  # pragma: no cover
+            settings.logger.info("No EDB gRPC setting provided. Enabling gRPC for EDB.")
+            settings.pyedb_use_grpc = True
+        else:
+            settings.logger.info("No EDB gRPC setting provided. Disabling gRPC for EDB.")
+            settings.pyedb_use_grpc = False
+
+    use_grpc = True if settings.pyedb_use_grpc and settings.aedt_version >= "2026.1" else False  # pragma: no cover
+    grpc_enabled = "Grpc enabled" if use_grpc else "Dotnet enabled"  # pragma: no cover
+    settings.logger.info(f"Loading EDB with {grpc_enabled}.")
+
+    return EdbApp(
+        edbpath=str(edbpath),
+        cellname=cellname,
+        isreadonly=isreadonly,
+        version=version,
+        isaedtowned=isaedtowned,
+        oproject=oproject,
+        student_version=student_version,
+        use_ppe=use_ppe,
+        technology_file=technology_file,
+        grpc=use_grpc,
+    )
+
+
+def Siwave(
+    specified_version: str | None = None,
+) -> "Siwave":
+    """Siwave Class.
+
+    Examples
+    --------
+    >>> from ansys.aedt.core import Siwave
+    >>> siwave = Siwave(specified_version="2026.1")
+
+    """
+    from pyedb.generic.design_types import Siwave as app
+
+    return app(
+        specified_version=specified_version,
+    )

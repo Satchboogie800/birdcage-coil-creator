@@ -1,0 +1,63 @@
+// Proto file representing the EDB Component Group class
+
+syntax = "proto3";
+
+// Package
+package ansys.api.edb.v1;
+
+// Imports
+import "ansys/api/edb/v1/edb_messages.proto";
+import "ansys/api/edb/v1/hierarchy_obj.proto";
+
+
+// Component Group service definition
+service ComponentGroupService {
+  // summary: Create a component group
+  // io_flags:
+  //   - buffer
+  //   - returns_future
+  rpc Create(ComponentGroupCreateMessage) returns (EDBObjMessage) {}
+
+  // summary: Get number of pins in the component group
+  // io_flags:
+  //   - cache
+  rpc GetNumberOfPins(EDBObjMessage) returns (google.protobuf.UInt64Value) {}
+
+  // summary: Get component property
+  // io_flags:
+  //   - cache
+  rpc GetComponentProperty(EDBObjMessage) returns (EDBObjMessage) {}
+
+  // summary: Set component property
+  // io_flags:
+  //   - buffer
+  rpc SetComponentProperty(PointerPropertyMessage) returns (google.protobuf.Empty) {}
+
+  // summary: Get component types
+  // io_flags:
+  //   - cache
+  rpc GetComponentType(EDBObjMessage) returns (ComponentTypeMessage) {}
+
+  // summary: Set component type
+  // io_flags:
+  //   - buffer
+  rpc SetComponentType(SetComponentGroupTypeMessage) returns (google.protobuf.Empty) {}
+
+  // summary: Find component group by component definition
+  // io_flags:
+  //   - cache
+  rpc FindByDef(ObjectNameInLayoutMessage) returns (EDBObjCollectionMessage) {}
+}
+
+message ComponentGroupCreateMessage {
+  ObjectNameInLayoutMessage target = 1;
+  string comp = 2;
+}
+
+message SetComponentGroupTypeMessage {
+  EDBObjMessage target = 1;
+  ComponentTypeMessage comp_type = 2;
+}
+
+
+

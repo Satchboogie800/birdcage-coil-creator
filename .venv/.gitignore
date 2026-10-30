@@ -1,0 +1,49 @@
+# ── Python ────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# ── Virtual environment (created per device with `uv sync`) ──
+.venv/
+# NOT ignored: uv.lock, pyproject.toml, .python-version
+
+# ── Tests / tools ─────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+.mypy_cache/
+
+# ── PyCharm (interpreter paths differ per device) ─────
+.idea/
+
+# ── Ansys AEDT / HFSS ─────────────────────────────────
+*.aedtresults/
+*.aedt.lock
+*.aedt.auto
+*.aedtz
+*.semaphore
+*.asol
+*.aedb/
+
+# ── Program output ────────────────────────────────────
+runs/
+*.log
+*.sqlite
+*.db
+
+# ── Local settings (paths, licence servers, etc.) ─────
+configs/local*.toml
+.env
+
+# ── Obsidian (if docs/ is opened as a vault) ──────────
+.obsidian/workspace*.json
+.obsidian/cache/
+.trash/
+
+# ── Operating system ──────────────────────────────────
+Thumbs.db
+desktop.ini
+.DS_Store

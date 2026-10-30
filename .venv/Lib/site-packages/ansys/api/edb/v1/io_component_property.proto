@@ -1,0 +1,37 @@
+// Proto file representing the EDB IO Component Property class
+
+syntax = "proto3";
+
+// Package
+package ansys.api.edb.v1;
+
+// Imports
+import "ansys/api/edb/v1/edb_messages.proto";
+
+// IO Component Property service definition
+service IOComponentPropertyService {
+  // summary: Create IO Component Property
+  // io_flags:
+  //   - buffer
+  //   - returns_future
+  //   - write_no_cache_invalidation
+  rpc Create(google.protobuf.Empty) returns (EDBObjMessage) {}
+
+  // summary: Set the solder ball property
+  // io_flags:
+  //   - buffer
+  rpc SetSolderBallProperty(PointerPropertyMessage) returns (google.protobuf.Empty) {}
+
+  // io_flags:
+  //   - cache
+  rpc GetSolderBallProperty(EDBObjMessage) returns (EDBObjMessage) {}
+
+  // summary: Set the port property
+  // io_flags:
+  //   - buffer
+  rpc SetPortProperty(PointerPropertyMessage) returns (google.protobuf.Empty) {}
+
+  // io_flags:
+  //   - cache
+  rpc GetPortProperty(EDBObjMessage) returns (EDBObjMessage) {}
+}

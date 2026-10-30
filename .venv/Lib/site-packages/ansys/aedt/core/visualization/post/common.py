@@ -1,0 +1,3275 @@
+# -*- coding: utf-8 -*-
+#
+# Copyright (C) 2021 - 2026 Synopsys, Inc. and ANSYS, Inc. All rights reserved.
+# SPDX-License-Identifier: MIT
+#
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+"""The module contains this class: `PostProcessorCommon`.
+
+The module provides all functionalities for common AEDT post processing.
+
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+import re
+from typing import TYPE_CHECKING
+
+from ansys.aedt.core.base import PyAedtBase
+from ansys.aedt.core.generic.aedt_constants import CircuitNetlistConstants
+from ansys.aedt.core.generic.aedt_constants import DesignType
+from ansys.aedt.core.generic.constants import unit_converter
+from ansys.aedt.core.generic.data_handlers import _dict_items_to_list_items
+from ansys.aedt.core.generic.file_utils import generate_unique_name
+from ansys.aedt.core.generic.file_utils import read_configuration_file
+from ansys.aedt.core.generic.general_methods import pyaedt_function_handler
+from ansys.aedt.core.generic.numbers_utils import _units_assignment
+from ansys.aedt.core.generic.numbers_utils import decompose_variable_value
+from ansys.aedt.core.internal.checks import requires_graphical_dependency
+from ansys.aedt.core.visualization.post.solution_data import SolutionData
+from ansys.aedt.core.visualization.report import emi as report_emi
+from ansys.aedt.core.visualization.report import eye as report_eye
+from ansys.aedt.core.visualization.report import field as report_field
+from ansys.aedt.core.visualization.report import netlist as report_netlist
+from ansys.aedt.core.visualization.report import standard as report_standard
+
+if TYPE_CHECKING:
+    from ansys.aedt.core.visualization.plot.matplotlib import ReportPlotter
+    from ansys.aedt.core.visualization.report.emi import EMIReceiver
+    from ansys.aedt.core.visualization.report.eye import AMIConturEyeDiagram
+    from ansys.aedt.core.visualization.report.eye import AMIEyeDiagram
+    from ansys.aedt.core.visualization.report.eye import EyeDiagram
+    from ansys.aedt.core.visualization.report.field import AntennaParameters
+    from ansys.aedt.core.visualization.report.field import FarField
+    from ansys.aedt.core.visualization.report.field import Fields
+    from ansys.aedt.core.visualization.report.field import NearField
+    from ansys.aedt.core.visualization.report.netlist import CircuitNetlistReport
+    from ansys.aedt.core.visualization.report.standard import Spectral
+    from ansys.aedt.core.visualization.report.standard import Standard
+
+TEMPLATES_BY_NAME = {
+    "Standard": report_standard.Standard,
+    "EddyCurrent": report_standard.Standard,
+    "AC Magnetic": report_standard.Standard,
+    "Modal Solution Data": report_standard.Standard,
+    "Terminal Solution Data": report_standard.Standard,
+    "Fields": report_field.Fields,
+    "CG Fields": report_field.Fields,
+    "DC R/L Fields": report_field.Fields,
+    "AC R/L Fields": report_field.Fields,
+    "Matrix": report_standard.Standard,
+    "Monitor": report_standard.Standard,
+    "Far Fields": report_field.FarField,
+    "Near Fields": report_field.NearField,
+    "Eye Diagram": report_eye.EyeDiagram,
+    "Statistical Eye": report_eye.AMIEyeDiagram,
+    "AMI Contour": report_eye.AMIConturEyeDiagram,
+    "Eigenmode Parameters": report_standard.Standard,
+    "Spectrum": report_standard.Spectral,
+    "EMIReceiver": report_emi.EMIReceiver,
+    "Netlist": report_netlist.CircuitNetlistReport,
+}
+"""Templates by name."""
+
+
+class PostProcessorCommon(PyAedtBase):
+    """Manages the main AEDT postprocessing functions.
+
+    This class is inherited in the caller application and is accessible through the post variable( eg. ``hfss.post`` or
+    ``q3d.post``).
+
+    .. note::
+       Some functionalities are available only when AEDT is running in
+       the graphical mode.
+
+    Parameters
+    ----------
+    app : :class:`ansys.aedt.core.application.analysis_3d.FieldAnalysis3D`
+        Inherited parent object. The parent object must provide the members
+        ``_modeler``, ``_desktop``, ``_odesign``, and ``logger``.
+
+    Examples
+    --------
+    >>> from ansys.aedt.core import Q3d
+    >>> q3d = Q3d()
+    >>> q3d.post.get_solution_data(domain="Original")
+
+    """
+
+    def __init__(self, app) -> None:
+        self._app = app
+        self._scratch = self._app.working_directory
+        self.__plots = self._get_plot_inputs()
+        self.reports_by_category = Reports(self, self._app.design_type)
+
+    @property
+    def plots(
+        self,
+    ) -> list[
+        (
+            Standard
+            | AMIEyeDiagram
+            | AMIConturEyeDiagram
+            | EMIReceiver
+            | EyeDiagram
+            | CircuitNetlistReport
+            | Fields
+            | FarField
+            | NearField
+            | Spectral
+        )
+    ]:
+        """Plot list.
+
+        Returns
+        -------
+        list[report_standard.Standard]
+            List of reports created in active design.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.visualization.post.common import PostProcessorCommon
+        >>> obj = PostProcessorCommon()
+        >>> obj.plots
+
+        """
+        if self.__plots is None:
+            self.__plots = self._get_plot_inputs()
+        return self.__plots
+
+    @plots.setter
+    def plots(
+        self,
+        value: list[
+            Standard
+            | AMIEyeDiagram
+            | AMIConturEyeDiagram
+            | EMIReceiver
+            | EyeDiagram
+            | CircuitNetlistReport
+            | Fields
+            | FarField
+            | NearField
+            | Spectral
+        ],
+    ) -> None:
+        self.__plots = value
+
+    @property
+    def available_report_types(self) -> list[str]:
+        """Report types.
+
+        References
+        ----------
+        >>> oModule.GetAvailableReportTypes
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.visualization.post.common import PostProcessorCommon
+        >>> obj = PostProcessorCommon()
+        >>> obj.available_report_types
+
+        """
+        return list(self.oreportsetup.GetAvailableReportTypes())
+
+    @property
+    def update_report_dynamically(self) -> bool:
+        """Get/Set the boolean to automatically update reports on edits.
+
+        Returns
+        -------
+        bool
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.visualization.post.common import PostProcessorCommon
+        >>> obj = PostProcessorCommon()
+        >>> obj.update_report_dynamically
+
+        """
+        return (
+            True
+            if self._app.odesktop.GetRegistryInt(
+                f"Desktop/Settings/ProjectOptions/{self._app.design_type}/UpdateReportsDynamicallyOnEdits"
+            )
+            == 1
+            else False
+        )
+
+    @update_report_dynamically.setter
+    def update_report_dynamically(self, value: bool) -> None:
+        if value:
+            self._app.odesktop.SetRegistryInt(
+                f"Desktop/Settings/ProjectOptions/{self._app.design_type}/UpdateReportsDynamicallyOnEdits", 1
+            )
+        else:  # pragma: no cover
+            self._app.odesktop.SetRegistryInt(
+                f"Desktop/Settings/ProjectOptions/{self._app.design_type}/UpdateReportsDynamicallyOnEdits", 0
+            )
+
+    @pyaedt_function_handler()
+    def available_display_types(self, report_category: str = None) -> list[str]:
+        """Retrieve display types for a report categories.
+
+        Parameters
+        ----------
+        report_category : str, optional
+            Type of the report. The default value is ``None``.
+
+        Returns
+        -------
+        list
+            List of available report categories.
+
+        References
+        ----------
+        >>> oModule.GetAvailableDisplayTypes
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.visualization.post.common import PostProcessorCommon
+        >>> obj = PostProcessorCommon()
+        >>> obj.available_display_types()
+
+        """
+        if not report_category:
+            report_category = self.available_report_types[0]
+        if report_category:
+            return list(self.oreportsetup.GetAvailableDisplayTypes(report_category))
+        return []  # pragma: no cover
+
+    @pyaedt_function_handler()
+    def available_quantities_categories(
+        self,
+        report_category: str = None,
+        display_type: str = None,
+        solution: str = None,
+        context: str | dict = None,
+        is_siwave_dc: bool = False,
+    ) -> list:
+        """Compute the list of all available report categories.
+
+        Parameters
+        ----------
+        report_category : str, optional
+            Report category. The default is ``None``, in which case the first default category is used.
+        display_type : str, optional
+            Report display type. The default is ``None``, in which case the first default type
+             is used. In most cases, this default type is ``"Rectangular Plot"``.
+        solution : str, optional
+            Report setup. The default is ``None``, in which case the first
+            nominal adaptive solution is used.
+        context : str, dict, optional
+            Report category. The default is ``None``, in which case the first default context
+            is used. For Maxwell 2D/3D eddy current solution types, the report category
+            can be provided as a dictionary, where the key is the matrix name and the value
+            the reduced matrix.
+        is_siwave_dc : bool, optional
+            Whether the setup is SIwave DCIR. The default is ``False``.
+
+        Returns
+        -------
+        list
+
+        References
+        ----------
+        >>> oModule.GetAllCategories
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.visualization.post.common import PostProcessorCommon
+        >>> obj = PostProcessorCommon()
+        >>> obj.available_quantities_categories()
+
+        """
+        if not report_category:
+            report_category = self.available_report_types[0]
+        if not display_type:
+            display_type = self.available_display_types(report_category)[0]
+        if not solution and hasattr(self._app, "nominal_adaptive"):
+            solution = self._app.nominal_adaptive
+        if is_siwave_dc:  # pragma: no cover
+            id_ = "0"
+            if context:
+                id_ = str(
+                    [
+                        "RL",
+                        "Sources",
+                        "Vias",
+                        "Bondwires",
+                        "Probes",
+                    ].index(context)
+                )
+            context = [
+                "NAME:Context",
+                "SimValueContext:=",
+                [37010, 0, 2, 0, False, False, -1, 1, 0, 1, 1, "", 0, 0, "DCIRID", False, id_, "IDIID", False, "1"],
+            ]
+        elif self._app.design_type in ["Maxwell 2D", DesignType.MAXWELL3D] and self._app.solution_type in [
+            "EddyCurrent",
+            "Electrostatic",
+        ]:
+            if isinstance(context, dict):
+                for k, v in context.items():
+                    context = ["Context:=", k, "Matrix:=", v]
+            elif context and isinstance(context, str):
+                context = ["Context:=", context]
+            elif not context:
+                context = ""
+        elif not context:  # pragma: no cover
+            context = ""
+
+        if solution and report_category and display_type:
+            try:
+                return list(self.oreportsetup.GetAllCategories(report_category, display_type, solution, context))
+            except Exception:  # pragma: no cover
+                return []
+        return []  # pragma: no cover
+
+    @pyaedt_function_handler()
+    def available_report_quantities(
+        self,
+        report_category: str = None,
+        display_type: str = None,
+        solution: str = None,
+        quantities_category: str = None,
+        context: str | dict = None,
+        is_siwave_dc: bool = False,
+        differential_pairs: bool = False,
+    ) -> list:
+        """Compute the list of all available report quantities of a given report quantity category.
+
+        Parameters
+        ----------
+        report_category : str, optional
+            Report Category. The default is ``None``, in which case the default category is used.
+        display_type : str, optional
+            Report Display Type.
+            The default is ``None``, in which case the default type is used.
+            In most of the cases the default type is "Rectangular Plot".
+        solution : str, optional
+            Report Setup.
+            The default is ``None``, in which case the first nominal adaptive solution is used.
+        quantities_category : str, optional
+            The category that the quantities belong to.
+            It must be one of the ``available_quantities_categories`` method.
+            The default is ``None``, in which case the first default quantity is used.
+        context : str, dict, optional
+            Report Context.
+            The default is ``None``, in which case the default context is used.
+            For Maxwell 2D/3D Eddy Current solution types this can be provided as a dictionary
+            where the key is the matrix name and value the reduced matrix.
+        is_siwave_dc : bool, optional
+            Whether if the setup is SIwave DCIR or not. Default is ``False``.
+        differential_pairs : bool, optional
+            Whether if return differential pairs traces or not. Default is ``False``.
+
+        Returns
+        -------
+        list
+
+        References
+        ----------
+        >>> oModule.GetAllQuantities
+
+        Examples
+        --------
+        The example shows how to get report expressions for a Maxwell design with Eddy current solution.
+        The context has to be provided as a dictionary where the key is the name of the original matrix
+        and the value is the name of the reduced matrix.
+        >>> from ansys.aedt.core import Maxwell3d
+        >>> m3d = Maxwell3d(solution_type="AC Magnetic")
+        >>> rectangle1 = m3d.modeler.create_rectangle(0, [0.5, 1.5, 0], [2.5, 5], name="Sheet1")
+        >>> rectangle2 = m3d.modeler.create_rectangle(0, [9, 1.5, 0], [2.5, 5], name="Sheet2")
+        >>> rectangle3 = m3d.modeler.create_rectangle(0, [16.5, 1.5, 0], [2.5, 5], name="Sheet3")
+        >>> m3d.assign_current(rectangle1.faces[0], amplitude=1, name="Cur1")
+        >>> m3d.assign_current(rectangle2.faces[0], amplitude=1, name="Cur2")
+        >>> m3d.assign_current(rectangle3.faces[0], amplitude=1, name="Cur3")
+        >>> L = m3d.assign_matrix(assignment=["Cur1", "Cur2", "Cur3"], matrix_name="Matrix1")
+        >>> out = L.join_series(sources=["Cur1", "Cur2"], matrix_name="ReducedMatrix1")
+        >>> expressions = m3d.post.available_report_quantities(
+        ...     report_category="AC Magnetic", display_type="Data Table", context={"Matrix1": "ReducedMatrix1"}
+        ... )
+        >>> expressions = m3d.post.available_report_quantities(
+        ...     report_category="EddyCurrent", display_type="Data Table", context={"Matrix1": "ReducedMatrix1"}
+        ... )
+        >>> m3d.desktop_class.release_desktop(False, False)
+
+        """
+        if not report_category:
+            report_category = self.available_report_types[0]
+        elif self._app.desktop_class.aedt_version_id >= "2025.2" and report_category == "EddyCurrent":
+            # From 2025R2, EddyCurrent category does not exist anymore, but old user code could still try to access
+            # This check allows code back compatibility in the report
+            self.logger.warning("Change the report category to AC Magnetic.")
+            report_category = "AC Magnetic"
+
+        if not display_type:
+            display_type = self.available_display_types(report_category)[0]
+        if not solution and hasattr(self._app, "nominal_adaptive"):
+            solution = self._app.nominal_adaptive
+        if is_siwave_dc:
+            context_id = "0"
+            if context:
+                context_id = str(
+                    [
+                        "RL",
+                        "Sources",
+                        "Vias",
+                        "Bondwires",
+                        "Probes",
+                    ].index(context)
+                )
+            context = [
+                "NAME:Context",
+                "SimValueContext:=",
+                [
+                    37010,
+                    0,
+                    2,
+                    0,
+                    False,
+                    False,
+                    -1,
+                    1,
+                    0,
+                    1,
+                    1,
+                    "",
+                    0,
+                    0,
+                    "DCIRID",
+                    False,
+                    context_id,
+                    "IDIID",
+                    False,
+                    "1",
+                ],
+            ]
+        elif differential_pairs:
+            if self.post_solution_type in ["HFSS3DLayout"]:
+                context = [
+                    "NAME:Context",
+                    "SimValueContext:=",
+                    [
+                        3,
+                        0,
+                        2,
+                        3,
+                        True,
+                        False,
+                        -1,
+                        1,
+                        0,
+                        1,
+                        1,
+                        "",
+                        0,
+                        0,
+                        "EnsDiffPairKey",
+                        False,
+                        "1",
+                        "IDIID",
+                        False,
+                        "1",
+                    ],
+                ]
+            elif self.post_solution_type in ["NexximLNA", "NexximTransient"]:
+                context = [
+                    "NAME:Context",
+                    "SimValueContext:=",
+                    [
+                        3,
+                        0,
+                        2,
+                        3,
+                        True,
+                        False,
+                        -1,
+                        1,
+                        0,
+                        1,
+                        1,
+                        "",
+                        0,
+                        0,
+                        "USE_DIFF_PAIRS",
+                        False,
+                        "1",
+                        "IDIID",
+                        False,
+                        "1",
+                    ],
+                ]
+            else:
+                context = ["Diff:=", "differential_pairs", "Domain:=", "Sweep"]
+        elif self._app.design_type in [DesignType.MAXWELL2D, DesignType.MAXWELL3D] and self._app.solution_type in [
+            "EddyCurrent",
+            "AC Magnetic",
+            "Electrostatic",
+        ]:
+            if isinstance(context, dict):
+                for k, v in context.items():
+                    context = ["Context:=", k, "Matrix:=", v]
+            elif context and isinstance(context, str):
+                context = ["Context:=", context]
+            elif not context:
+                context = ""
+        elif not context:
+            context = ""
+        if not quantities_category:
+            categories = self.available_quantities_categories(report_category, display_type, solution, context)
+            if categories and display_type and report_category and solution:
+                for el in categories:
+                    res = list(self.oreportsetup.GetAllQuantities(report_category, display_type, solution, context, el))
+                    if res:
+                        return res
+        if quantities_category and display_type and report_category and solution:
+            return list(
+                self.oreportsetup.GetAllQuantities(
+                    report_category, display_type, solution, context, quantities_category
+                )
+            )
+        return []  # pragma: no cover
+
+    @pyaedt_function_handler()
+    def get_all_report_quantities(
+        self,
+        solution: str = None,
+        context: str | dict = None,
+        is_siwave_dc: bool = False,
+    ) -> dict:
+        """Return all the possible report categories organized by report types, solution and categories.
+
+        Parameters
+        ----------
+        solution : str optional
+            Solution to get the report quantities.
+            The default is ``None``, in which case the all solutions are used.
+        context : str, dict, optional
+            Report Context.
+            The default is ``None``, in which case the default context is used.
+            For Maxwell 2D/3D Eddy Current solution types this can be provided as a dictionary
+            where the key is the matrix name and value the reduced matrix.
+        is_siwave_dc : bool, optional
+            Whether if the setup is SIwave DCIR or not. Default is ``False``.
+
+        Returns
+        -------
+        dict
+            A dictionary with primary key the report type, secondary key the solution type and
+            third key the report categories.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.visualization.post.common import PostProcessorCommon
+        >>> obj = PostProcessorCommon()
+        >>> obj.get_all_report_quantities()
+
+        """
+        rep_quantities = {}
+        if not context and self._app.design_type in [
+            DesignType.HFSS,
+            DesignType.MAXWELL3D,
+            DesignType.MAXWELL2D,
+            DesignType.Q3D,
+            DesignType.EXTRACTOR2D,
+            DesignType.ICEPAK,
+            DesignType.ICEPAKFEA,
+        ]:
+            if not context and "2D" in self._app.modeler.design_type:
+                if self._app.modeler.point_names:
+                    context = self._app.modeler.point_names[0]
+            elif not context:
+                if self._app.modeler.line_names:
+                    context = self._app.modeler.line_names[0]
+        for rep in self.available_report_types:
+            rep_quantities[rep] = {}
+            solutions = [solution] if isinstance(solution, str) else self.available_report_solutions(rep)
+            for sol in solutions:
+                rep_quantities[rep][sol] = {}
+                for quant in self.available_quantities_categories(
+                    rep, context=context, solution=sol, is_siwave_dc=is_siwave_dc
+                ):
+                    rep_quantities[rep][sol][quant] = self.available_report_quantities(
+                        rep, quantities_category=quant, context=context, solution=sol, is_siwave_dc=is_siwave_dc
+                    )
+
+        return rep_quantities
+
+    @pyaedt_function_handler()
+    def available_report_solutions(self, report_category: str = None) -> list:
+        """Get the list of available solutions that can be used for the reports.
+
+        This list differs from the one obtained with ``app.existing_analysis_sweeps``,
+        because it includes additional elements like "AdaptivePass".
+
+        Parameters
+        ----------
+        report_category : str, optional
+            Report Category. Default is ``None`` which takes default category.
+
+        Returns
+        -------
+        list
+
+        References
+        ----------
+        >>> oModule.GetAvailableSolutions
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.visualization.post.common import PostProcessorCommon
+        >>> obj = PostProcessorCommon()
+        >>> obj.available_report_solutions()
+
+        """
+        if not report_category:
+            report_category = self.available_report_types[0]
+        if report_category:
+            return list(self.oreportsetup.GetAvailableSolutions(report_category))
+        return None
+
+    @pyaedt_function_handler()  # pragma: no cover
+    def _get_setup_from_sweep_name(self, sweep_name):
+        if ":" not in sweep_name:
+            sweep_names = []  # Look for sweep name in setups if the setup is not
+            for s in self._app.setups:  # passed explicitly in setup_sweep_name.
+                for sweep in s.sweeps:
+                    this_name = s.name + " : " + sweep.name if sweep.name == sweep_name else None
+                    if this_name:
+                        sweep_names.append(this_name)
+            if len(sweep_names) > 1:
+                warning_str = f"More than one sweep with name '{sweep_name}' found. "
+                warning_str += f"Returning '{sweep_names[0]}'."
+                self.logger.warning(warning_str)
+                return sweep_names[0]
+            elif len(sweep_names) == 1:
+                return sweep_names[0]
+            else:
+                return sweep_name  # Nothing found, pass the sweep name through.
+        else:
+            return sweep_name
+
+    @pyaedt_function_handler()
+    def _get_plot_inputs(self):
+        names = self._app.get_oo_name(self.oreportsetup)
+        plots = []
+        skip_plot = False
+        if self._app.design_type == "Circuit Netlist" and self._app.desktop_class.non_graphical:
+            skip_plot = True
+        if names and not skip_plot:
+            for name in names:
+                new_name = self._rename_internal_object(name)
+                obj = self._app.get_oo_object(self.oreportsetup, new_name)
+
+                if not obj:
+                    self.logger.warning(f"Report {name} not found.")
+                    break
+
+                report_type = obj.GetPropValue("Report Type")
+                obj_child_names = self._app.get_oo_name(obj)
+                if report_type == "Standard" and any("Bit Error Rate" in i for i in obj_child_names):
+                    report_type = "AMI Contour"
+                report = TEMPLATES_BY_NAME.get(report_type, TEMPLATES_BY_NAME["Standard"])
+                traces = self._app.get_oo_name(obj)
+                solution = None
+                for trc_name in traces:
+                    try:
+                        new_trace_name = self._rename_internal_object(trc_name)
+                        solution = self._app.get_oo_property_value(obj, new_trace_name, "Solution")
+                        break
+                    except Exception:  # nosec
+                        pass
+                plots.append(report(self, report_type, solution))
+                plots[-1]._legacy_props["plot_name"] = name
+                plots[-1]._is_created = True
+                plots[-1].report_type = obj.GetPropValue("Display Type")
+                plots[-1]._initialize_tree_node()
+        return plots
+
+    @property
+    def oreportsetup(self):
+        """Report setup.
+
+        Returns
+        -------
+        :attr:`ansys.aedt.core.modules.post_general.PostProcessor.oreportsetup`
+
+        References
+        ----------
+        >>> oDesign.GetModule("ReportSetup")
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.visualization.post.common import PostProcessorCommon
+        >>> obj = PostProcessorCommon()
+        >>> obj.oreportsetup
+
+        """
+        return self._app.oreportsetup
+
+    @property
+    def logger(self):
+        """Logger.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.visualization.post.common import PostProcessorCommon
+        >>> obj = PostProcessorCommon()
+        >>> obj.logger
+
+        """
+        return self._app.logger
+
+    @property
+    def _desktop(self):
+        """Desktop."""
+        return self._app.odesktop
+
+    @property
+    def _odesign(self):
+        """Design."""
+        return self._app._odesign
+
+    @property
+    def _oproject(self):
+        """Project."""
+        return self._app._oproject
+
+    @property
+    def oeditor(self):
+        """Retrieve oeditor."""
+        try:
+            return self._app.modeler.oeditor
+        except AttributeError:
+            return
+
+    @property
+    def post_solution_type(self) -> str:
+        """Design solution type.
+
+        Returns
+        -------
+        type
+            Design solution type.
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.visualization.post.common import PostProcessorCommon
+        >>> obj = PostProcessorCommon()
+        >>> obj.post_solution_type
+
+        """
+        return self._app.solution_type
+
+    @property
+    def all_report_names(self) -> list:
+        """List of all report names.
+
+        Returns
+        -------
+        list
+
+        References
+        ----------
+        >>> oModule.GetAllReportNames()
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.visualization.post.common import PostProcessorCommon
+        >>> obj = PostProcessorCommon()
+        >>> obj.all_report_names
+
+        """
+        return list(self.oreportsetup.GetAllReportNames())
+
+    @pyaedt_function_handler()
+    def copy_report_data(self, plot_name: str, paste: bool = True) -> bool:
+        """Copy report data as static data.
+
+        Parameters
+        ----------
+        plot_name : str
+            Name of the report.
+        paste : bool, optional
+            Whether to paste the report. The default is ``True``.
+
+        Returns
+        -------
+        bool
+            ``True`` when successful, ``False`` when failed.
+
+        References
+        ----------
+        >>> oModule.CopyReportsData
+        >>> oModule.PasteReports
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.visualization.post.common import PostProcessorCommon
+        >>> obj = PostProcessorCommon()
+        >>> obj.copy_report_data(my_report)
+
+        """
+        self.oreportsetup.CopyReportsData([plot_name])
+        if paste:
+            self.paste_report_data()
+        return True
+
+    @pyaedt_function_handler()
+    def paste_report_data(self) -> bool:
+        """Paste report data as static data.
+
+        Returns
+        -------
+        bool
+            ``True`` when successful, ``False`` when failed.
+
+        References
+        ----------
+        >>> oModule.PasteReports
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.visualization.post.common import PostProcessorCommon
+        >>> obj = PostProcessorCommon()
+        >>> obj.paste_report_data()
+
+        """
+        self.oreportsetup.PasteReports()
+        return True
+
+    @pyaedt_function_handler()
+    def delete_report(self, plot_name: str = None) -> bool:
+        """Delete all reports or specific report.
+
+        Parameters
+        ----------
+        plot_name : str, optional
+            Name of the plot to delete. The default  value is ``None`` and in this case, all reports are deleted.
+
+        Returns
+        -------
+        bool
+            ``True`` when successful, ``False`` when failed.
+
+        References
+        ----------
+        >>> oModule.DeleteReports
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.visualization.post.common import PostProcessorCommon
+        >>> obj = PostProcessorCommon()
+        >>> obj.delete_report()
+
+        """
+        try:
+            if plot_name:
+                self.oreportsetup.DeleteReports([plot_name])
+                for plot in self.plots:
+                    if plot.plot_name == plot_name:
+                        self.plots.remove(plot)
+            else:
+                self.oreportsetup.DeleteAllReports()
+                self.plots.clear()
+            return True
+        except Exception:  # pragma: no cover
+            return False
+
+    @pyaedt_function_handler()
+    def rename_report(self, plot_name: str, new_name: str) -> bool:
+        """Rename a plot.
+
+        Parameters
+        ----------
+        plot_name : str
+            Name of the plot.
+        new_name : str
+            New name of the plot.
+
+        Returns
+        -------
+        bool
+            ``True`` when successful, ``False`` when failed.
+
+        References
+        ----------
+        >>> oModule.RenameReport
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.visualization.post.common import PostProcessorCommon
+        >>> obj = PostProcessorCommon()
+        >>> obj.rename_report("my_plot", "my_new_plot")
+
+        """
+        try:
+            self.oreportsetup.RenameReport(plot_name, new_name)
+            for plot in self.plots:
+                if plot.plot_name == plot_name:
+                    plot.plot_name = self._app.get_oo_property_value(self.oreportsetup, new_name, "Name")
+            return True
+        except Exception:
+            return False
+
+    @pyaedt_function_handler()
+    def get_solution_data_per_variation(
+        self,
+        solution_type: str = "Far Fields",
+        setup_sweep_name: str = "",
+        context: str | dict = None,
+        sweeps: dict = None,
+        expressions: str = "",
+    ) -> SolutionData | None:
+        """Retrieve solution data for each variation.
+
+        Parameters
+        ----------
+        solution_type : str, optional
+            Type of the solution. For example, ``"Far Fields"`` or ``"Modal Solution Data"``. The default
+            is ``"Far Fields"``.
+        setup_sweep_name : str, optional
+            Name of the setup for computing the report. The default is ``""``,
+            in which case ``"nominal adaptive"`` is used.
+        context : list, optional
+            List of context variables. The default is ``None``.
+        sweeps : dict, optional
+            Dictionary of variables and values. The default is ``None``,
+            in which case this list is used:
+            ``{'Theta': 'All', 'Phi': 'All', 'Freq': 'All'}``.
+        expressions : str or list, optional
+            One or more traces to include. The default is ``""``.
+
+        Returns
+        -------
+        from ansys.aedt.core.modules.solutions.SolutionData
+
+
+        References
+        ----------
+        >>> oModule.GetSolutionDataPerVariation
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.visualization.post.common import PostProcessorCommon
+        >>> obj = PostProcessorCommon()
+        >>> obj.get_solution_data_per_variation()
+
+        """
+        if sweeps is None:
+            sweeps = {"Theta": "All", "Phi": "All", "Freq": "All"}
+        sweeps = {i: _units_assignment(k) for i, k in sweeps.items()}
+        if not context:
+            context = []
+        if not isinstance(expressions, list):
+            expressions = [expressions]
+        if not setup_sweep_name:
+            setup_sweep_name = self._app.nominal_adaptive
+        sweep_list = self.__convert_dict_to_report_sel(sweeps)
+        try:
+            self.logger.reset_timer()
+            data = list(
+                self.oreportsetup.GetSolutionDataPerVariation(
+                    solution_type, setup_sweep_name, context, sweep_list, expressions
+                )
+            )
+            self.logger.info_timer(
+                "Solution Correctly loaded."
+                if data
+                else "Solution Data failed to load. Check solution, context or expression."
+            )
+            self.logger.reset_timer()
+            sol = SolutionData(data)
+            self.logger.info_timer("Solution Correctly parsed.")
+            return sol
+        except Exception:
+            self.logger.warning("Solution Data failed to load. Check solution, context or expression.")
+            return None
+
+    @pyaedt_function_handler()
+    def steal_focus_oneditor(self) -> bool:
+        """Remove the selection of an object that would prevent the image from exporting correctly.
+
+        Returns
+        -------
+        bool
+            ``True`` when successful, ``False`` when failed.
+
+        References
+        ----------
+        >>> oDesktop.RestoreWindow
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.visualization.post.common import PostProcessorCommon
+        >>> obj = PostProcessorCommon()
+        >>> obj.steal_focus_oneditor()
+
+        """
+        self._desktop.RestoreWindow()
+        param = ["NAME:SphereParameters", "XCenter:=", "0mm", "YCenter:=", "0mm", "ZCenter:=", "0mm", "Radius:=", "1mm"]
+        attr = ["NAME:Attributes", "Name:=", "DUMMYSPHERE1", "Flags:=", "NonModel#"]
+        self.oeditor.CreateSphere(param, attr)
+        self.oeditor.Delete(["NAME:Selections", "Selections:=", "DUMMYSPHERE1"])
+        return True
+
+    @pyaedt_function_handler()
+    def export_report_to_file(
+        self,
+        output_dir: str,
+        plot_name: str,
+        extension: str,
+        unique_file: bool = False,
+        uniform: bool = False,
+        start: str = None,
+        end: str = None,
+        step: str = None,
+        use_trace_number_format: bool = False,
+    ) -> str:
+        """Export a 2D Plot data to a file.
+
+        This method leaves the data in the plot (as data) as a reference
+        for the Plot after the loops.
+
+        Parameters
+        ----------
+        output_dir : str
+            Path to the directory of exported report
+        plot_name : str
+            Name of the plot to export.
+        extension : str
+            Extension of export , one of
+                * (CSV) .csv
+                * (Tab delimited) .tab
+                * (Post processor format) .txt
+                * (Ensight XY data) .exy
+                * (Anosft Plot Data) .dat
+                * (Ansoft Report Data Files) .rdat
+        unique_file : bool
+            If set to True, generates unique file in output_dit
+        uniform : bool, optional
+            Whether the export uniform points to the file. The
+            default is ``False``.
+        start : str, optional
+            Start range with units for the sweep if the ``uniform`` parameter
+            is set to ``True``.
+        end : str, optional
+            End range with units for the sweep if the ``uniform`` parameter
+            is set to ``True``.
+        step : str, optional
+            Step range with units for the sweep if the ``uniform`` parameter is
+            set to ``True``.
+        use_trace_number_format : bool, optional
+            Whether to use trace number formats and use separate columns for curve. The default is ``False``.
+
+        Returns
+        -------
+        str
+            Path of exported file.
+
+        References
+        ----------
+        >>> oModule.ExportReportDataToFile
+        >>> oModule.ExportUniformPointsToFile
+        >>> oModule.ExportToFile
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> cir = Circuit("my_project.aedt")
+        >>> report = cir.post.create_report("MyScattering")
+        >>> cir.post.export_report_to_file("C:\\temp", "MyTestScattering", ".csv")
+
+        """
+        npath = output_dir
+
+        if "." not in extension:  # pragma: no cover
+            extension = "." + extension
+
+        supported_ext = [".csv", ".tab", ".txt", ".exy", ".dat", ".rdat"]
+        if extension not in supported_ext:  # pragma: no cover
+            msg = f"Extension {extension} is not supported. Use one of {', '.join(supported_ext)}"
+            raise ValueError(msg)
+
+        file_path = os.path.join(npath, plot_name + extension)
+        if unique_file:  # pragma: no cover
+            while os.path.exists(file_path):
+                file_name = generate_unique_name(plot_name)
+                file_path = os.path.join(npath, file_name + extension)
+
+        if extension == ".rdat":
+            self.oreportsetup.ExportReportDataToFile(plot_name, file_path)
+        elif uniform:
+            self.oreportsetup.ExportUniformPointsToFile(plot_name, file_path, start, end, step, use_trace_number_format)
+        else:
+            self.oreportsetup.ExportToFile(plot_name, file_path, use_trace_number_format)
+        return file_path
+
+    @pyaedt_function_handler()
+    def export_report_to_csv(
+        self,
+        project_dir: str,
+        plot_name: str,
+        uniform: bool = False,
+        start: str = None,
+        end: str = None,
+        step: str = None,
+        use_trace_number_format: bool = False,
+    ) -> str:
+        """Export the 2D Plot data to a CSV file.
+
+        This method leaves the data in the plot (as data) as a reference
+        for the Plot after the loops.
+
+        Parameters
+        ----------
+        project_dir : str
+            Path to the project directory. The CSV file is plot_name.csv.
+        plot_name : str
+            Name of the plot to export.
+        uniform : bool, optional
+            Whether the export uniform points to the file. The
+            default is ``False``.
+        start : str, optional
+            Start range with units for the sweep if the ``uniform`` parameter
+            is set to ``True``.
+        end : str, optional
+            End range with units for the sweep if the ``uniform`` parameter
+            is set to ``True``.
+        step : str, optional
+            Step range with units for the sweep if the ``uniform`` parameter is
+            set to ``True``.
+        use_trace_number_format : bool, optional
+            Whether to use trace number formats. The default is ``False``.
+
+        Returns
+        -------
+        str
+            Path of exported file.
+
+        References
+        ----------
+        >>> oModule.ExportReportDataToFile
+        >>> oModule.ExportToFile
+        >>> oModule.ExportUniformPointsToFile
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.visualization.post.common import PostProcessorCommon
+        >>> obj = PostProcessorCommon()
+        >>> obj.export_report_to_csv("my_dir", "my_plot")
+
+        """
+        return self.export_report_to_file(
+            project_dir,
+            plot_name,
+            extension=".csv",
+            uniform=uniform,
+            start=start,
+            end=end,
+            step=step,
+            use_trace_number_format=use_trace_number_format,
+        )
+
+    @pyaedt_function_handler()
+    def export_report_to_jpg(
+        self, project_path: str, plot_name: str, width: int = 800, height: int = 450, image_format: str = "jpg"
+    ) -> bool:
+        """Export plot to an image file.
+
+        Parameters
+        ----------
+        project_path : str
+            Path to the project directory or full path to the file.
+        plot_name : str
+            Name of the plot to export.
+        width : int, optional
+            Image width. Default is ``800`` which takes Desktop size or 800 pixel.
+        height : int, optional
+            Image height. Default is ``450`` which takes Desktop size or 450 pixel.
+        image_format : str, optional
+            Format of the image file. The default is ``"jpg"``.
+
+        Returns
+        -------
+        bool
+            ``True`` when successful, ``False`` when failed.
+
+        References
+        ----------
+        >>> oModule.ExportImageToFile
+
+        Examples
+        --------
+        >>> from ansys.aedt.core.visualization.post.common import PostProcessorCommon
+        >>> obj = PostProcessorCommon()
+        >>> obj.export_report_to_jpg("my_dir", "my_plot")
+
+        """
+        if Path(project_path).is_dir():
+            file_name = os.path.join(project_path, plot_name + "." + image_format)  # name of the image file
+        else:
+            file_name = project_path
+        self.oreportsetup.ExportImageToFile(plot_name, file_name, width, height)
+        return True
+
+    @pyaedt_function_handler()
+    def _get_report_inputs(
+        self,
+        expressions,
+        setup_sweep_name=None,
+        domain: str = "Sweep",
+        variations: dict | None = None,
+        primary_sweep_variable=None,
+        secondary_sweep_variable=None,
+        report_category=None,
+        plot_type: str = "Rectangular Plot",
+        context=None,
+        subdesign_id: int | None = None,
+        polyline_points: int = 0,
+        plot_name=None,
+        only_get_method: bool = False,
+    ):
+        ctxt = []
+        if not setup_sweep_name:
+            setup_sweep_name = self._app.nominal_sweep
+        elif setup_sweep_name not in self._app.existing_analysis_sweeps:
+            self.logger.error("Sweep not Available.")
+            return False
+        families_input = {}
+        did = 3
+        if domain == "Sweep" and not primary_sweep_variable:
+            primary_sweep_variable = "Freq"
+        elif not primary_sweep_variable:
+            primary_sweep_variable = "Time"
+            did = 1
+        if not variations or primary_sweep_variable not in variations:
+            families_input[primary_sweep_variable] = ["All"]
+        elif isinstance(variations[primary_sweep_variable], list):
+            families_input[primary_sweep_variable] = variations[primary_sweep_variable]
+        else:
+            families_input[primary_sweep_variable] = [variations[primary_sweep_variable]]
+        if not variations:
+            variations = self._app.available_variations.nominal_variation(dependent_params=False)
+        for el in list(variations.keys()):
+            if el == primary_sweep_variable:
+                continue
+            if isinstance(variations[el], list):
+                families_input[el] = variations[el]
+            else:
+                families_input[el] = [variations[el]]
+        if only_get_method and domain == "Sweep":
+            if "Phi" not in families_input:
+                families_input["Phi"] = ["All"]
+            if "Theta" not in families_input:
+                families_input["Theta"] = ["All"]
+
+        if self.post_solution_type in ["TR", "AC", "DC", "TwinbuilderTR", "TwinbuilderAC", "TwinbuilderDC"]:
+            ctxt = [
+                "NAME:Context",
+                "SimValueContext:=",
+                [did, 0, 2, 0, False, False, -1, 1, 0, 1, 1, "", 0, 0],
+            ]
+            if self.post_solution_type == "TwinbuilderTR":
+                setup_sweep_name = "TR"
+            elif self.post_solution_type == "TwinbuilderAC":
+                setup_sweep_name = "AC"
+            elif self.post_solution_type == "TwinbuilderDC":
+                setup_sweep_name = "DC"
+            else:
+                setup_sweep_name = self.post_solution_type
+        elif self.post_solution_type in ["HFSS3DLayout"]:
+            if context == "Differential Pairs":
+                ctxt = [
+                    "NAME:Context",
+                    "SimValueContext:=",
+                    [
+                        did,
+                        0,
+                        2,
+                        0,
+                        False,
+                        False,
+                        -1,
+                        1,
+                        0,
+                        1,
+                        1,
+                        "",
+                        0,
+                        0,
+                        "EnsDiffPairKey",
+                        False,
+                        "1",
+                        "IDIID",
+                        False,
+                        "1",
+                    ],
+                ]
+            else:
+                ctxt = [
+                    "NAME:Context",
+                    "SimValueContext:=",
+                    [did, 0, 2, 0, False, False, -1, 1, 0, 1, 1, "", 0, 0, "IDIID", False, "1"],
+                ]
+        elif self.post_solution_type in ["NexximLNA", "NexximTransient"]:
+            ctxt = ["NAME:Context", "SimValueContext:=", [did, 0, 2, 0, False, False, -1, 1, 0, 1, 1, "", 0, 0]]
+            if subdesign_id:
+                ctxt_temp = ["NUMLEVELS", False, "1", "SUBDESIGNID", False, str(subdesign_id)]
+                for el in ctxt_temp:
+                    ctxt[2].append(el)
+            if context == "Differential Pairs":
+                ctxt_temp = ["USE_DIFF_PAIRS", False, "1"]
+                for el in ctxt_temp:
+                    ctxt[2].append(el)
+        elif context == "Differential Pairs":
+            ctxt = ["Diff:=", "Differential Pairs", "Domain:=", domain]
+        elif self.post_solution_type in [DesignType.Q3D, DesignType.EXTRACTOR2D]:
+            if not context:
+                ctxt = ["Context:=", "Original"]
+            else:
+                ctxt = ["Context:=", context]
+        elif context:
+            ctxt = ["Context:=", context]
+            if context in self._app.modeler.line_names:
+                ctxt.append("PointCount:=")
+                ctxt.append(polyline_points)
+
+        if not isinstance(expressions, list):
+            expressions = [expressions]
+
+        if not report_category and not self._app.design_solutions.report_type:
+            self.logger.error("Solution not supported")
+            return False
+        if not report_category:
+            modal_data = self._app.design_solutions.report_type
+        else:
+            modal_data = report_category
+        if not plot_name:
+            plot_name = generate_unique_name("Plot")
+
+        arg = ["X Component:=", primary_sweep_variable, "Y Component:=", expressions]
+        if plot_type in ["3D Polar Plot", "3D Spherical Plot"]:
+            if not primary_sweep_variable:
+                primary_sweep_variable = "Phi"
+            if not secondary_sweep_variable:
+                secondary_sweep_variable = "Theta"
+            arg = [
+                "Phi Component:=",
+                primary_sweep_variable,
+                "Theta Component:=",
+                secondary_sweep_variable,
+                "Mag Component:=",
+                expressions,
+            ]
+        elif plot_type == "Radiation Pattern":
+            if not primary_sweep_variable:
+                primary_sweep_variable = "Phi"
+            arg = ["Ang Component:=", primary_sweep_variable, "Mag Component:=", expressions]
+        elif plot_type in ["Smith Chart", "Polar Plot"]:
+            arg = ["Polar Component:=", expressions]
+        elif plot_type == "Rectangular Contour Plot":
+            arg = [
+                "X Component:=",
+                primary_sweep_variable,
+                "Y Component:=",
+                secondary_sweep_variable,
+                "Z Component:=",
+                expressions,
+            ]
+        return [plot_name, modal_data, plot_type, setup_sweep_name, ctxt, families_input, arg]
+
+    @pyaedt_function_handler()
+    def _check_category_context(self, expression, report_category, context):
+        field_ctx = context
+        if self._app.design_type in [
+            DesignType.HFSS,
+            DesignType.MAXWELL3D,
+            DesignType.MAXWELL2D,
+            DesignType.Q3D,
+            DesignType.EXTRACTOR2D,
+            DesignType.ICEPAK,
+            DesignType.ICEPAKFEA,
+        ]:
+            if not field_ctx and "2D" in self._app.modeler.design_type:
+                if self._app.modeler.point_names:
+                    field_ctx = self._app.modeler.point_names[0]
+            elif not field_ctx:
+                if self._app.modeler.line_names:
+                    field_ctx = self._app.modeler.line_names[0]
+        if not report_category:
+            sols = self.get_all_report_quantities(context=field_ctx)
+            for cat, sol in sols.items():
+                for s, q in sol.items():
+                    for _, v in q.items():
+                        if any([i in expression for i in v]):
+                            report_category = cat
+                            self._app.logger.warning(f"No report category provided. Automatically identified {cat}")
+                            break
+                    if report_category:
+                        break
+                if report_category:
+                    break
+        if not context:
+            if report_category == "Far Fields" and not context:
+                for setup in self._app.field_setups:
+                    if setup.type == "FarFieldSphere":
+                        context = setup.name
+                        self._app.logger.warning(f"No Far Fields infinite sphere provided. Assigned setup: {context}")
+
+                        break
+            elif report_category == "Near Fields" and not context:
+                for setup in self._app.field_setups:
+                    if setup.type.startswith("NearField"):
+                        context = setup.name
+                        self._app.logger.warning(f"No Near Fields setup provided. Assigned setup: {context}")
+                        break
+            elif report_category == "Fields" and not context:
+                context = field_ctx
+                self._app.logger.warning(f"No context provided for Fields. Assigned object: {context}")
+        return report_category, context
+
+    @pyaedt_function_handler()
+    def _get_report_object(
+        self,
+        expressions=None,
+        setup_sweep_name=None,
+        domain=None,
+        variations: dict | None = None,
+        primary_sweep_variable=None,
+        secondary_sweep_variable=None,
+        report_category=None,
+        context=None,
+        subdesign_id: int | None = None,
+        polyline_points: int = 1001,
+    ):
+        # Setup
+        if not setup_sweep_name:
+            if report_category == "Fields":
+                setup_sweep_name = self._app.nominal_adaptive  # Field report and no sweep name passed.
+            else:
+                setup_sweep_name = self._app.nominal_sweep
+        elif setup_sweep_name in self._app.setup_sweeps_names:
+            legacy_active = self._app.active_setup
+            self._app.active_setup = setup_sweep_name
+            if report_category == "Fields":
+                setup_sweep_name = self._app.nominal_adaptive  # Field report and no sweep name passed.
+            else:
+                setup_sweep_name = self._app.nominal_sweep
+            self._app.active_setup = legacy_active
+        elif setup_sweep_name in ["Last Adaptive", "Adaptive"]:
+            setup_sweep_name = self._app.nominal_adaptive  # Field report and no sweep name passed.
+        else:
+            for k, v in self._app.setup_sweeps_names.items():
+                if setup_sweep_name in v["Sweeps"]:
+                    setup_sweep_name = f"{k} : {setup_sweep_name}"
+                    break
+        setup_name = setup_sweep_name.split(":")[0].strip()
+        if (
+            self._app.design_type not in ["Circuit Netlist", "Twin Builder"]
+            and setup_name not in self._app.setup_sweeps_names
+        ):
+            raise KeyError(f"Setup {setup_name} not available in current design.")
+
+        # Domain
+        if not domain:
+            domain = "Sweep"
+            if setup_name:
+                if "Time" in self._app.design_setups[setup_name].default_intrinsics:
+                    domain = "Time"
+
+        # Expressions
+        if not expressions:
+            expressions = [
+                i
+                for i in self.available_report_quantities(
+                    report_category=report_category, solution=setup_sweep_name, context=context
+                )
+            ]
+        elif isinstance(expressions, str):
+            expressions = [expressions]
+        report_category, context = self._check_category_context(expressions[0], report_category, context)
+
+        # Report Category
+        if domain in ["Spectral", "Spectrum"]:
+            report_category = "Spectrum"
+        if not report_category and not self._app.design_solutions.report_type:
+            self.logger.error("Solution not supported")
+            return False
+        elif not report_category:
+            report_category = self._app.design_solutions.report_type
+
+        # Report Class
+        if report_category in TEMPLATES_BY_NAME:
+            report_class = TEMPLATES_BY_NAME[
+                "Netlist" if self._app.design_type == "Circuit Netlist" else report_category
+            ]
+        else:
+            report_class = TEMPLATES_BY_NAME["Standard"]
+
+        # Report creation
+        report = report_class(self, report_category, setup_sweep_name)
+        report.expressions = expressions
+        report.domain = domain
+
+        # Primary/Secondary Sweep Variable
+        if primary_sweep_variable:
+            report.primary_sweep = primary_sweep_variable
+        elif domain == "DCIR":  # pragma: no cover
+            report.primary_sweep = "Index"
+            if variations:
+                variations["Index"] = ["All"]
+            else:  # pragma: no cover
+                variations = {"Index": "All"}
+        if secondary_sweep_variable:
+            report.secondary_sweep = secondary_sweep_variable
+
+        # Variations
+        if not variations:
+            variations = {}
+        if not variations and domain == "Sweep":
+            variations = self._app.available_variations.nominal_variation(dependent_params=False)
+        elif not variations and domain != "Sweep":
+            variations = self._app.available_variations.nominal_variation(dependent_params=False)
+        if setup_name in self._app.design_setups:
+            for v in self._app.design_setups[setup_name].default_intrinsics.keys():
+                if v not in variations:
+                    variations[v] = "All"
+        if primary_sweep_variable and primary_sweep_variable not in variations:
+            variations[primary_sweep_variable] = "All"
+        if secondary_sweep_variable and secondary_sweep_variable not in variations:
+            variations[secondary_sweep_variable] = "All"
+        report.variations = variations
+        report.sub_design_id = subdesign_id
+        report.point_number = polyline_points
+        if context == "Differential Pairs":
+            report.differential_pairs = True
+        elif self._app.design_type in [DesignType.Q3D, DesignType.EXTRACTOR2D] and context:
+            report.matrix = context
+        elif (
+            self._app.design_type in [DesignType.MAXWELL2D, DesignType.MAXWELL3D]
+            and context
+            and self._app.solution_type in ["EddyCurrent", "Electrostatic", "AC Magnetic"]
+        ):
+            if isinstance(context, dict):
+                for k, v in context.items():
+                    report.matrix = k
+                    report.reduced_matrix = v
+            elif (
+                hasattr(self._app.modeler, "line_names")
+                and hasattr(self._app.modeler, "point_names")
+                and context in self._app.modeler.point_names + self._app.modeler.line_names
+            ):
+                report.polyline = context
+            else:
+                report.matrix = context
+        elif report_category == "Far Fields":
+            if not context and self._app.field_setups:
+                report.far_field_sphere = self._app.field_setups[0].name
+                if "Theta" not in report.variations:
+                    report.variations["Theta"] = ["All"]
+                if "Phi" not in report.variations:
+                    report.variations["Phi"] = ["All"]
+                report.primary_sweep = "Theta"
+            else:
+                if isinstance(context, dict):
+                    if "Context" in context.keys() and "SourceContext" in context.keys():
+                        report.far_field_sphere = context["Context"]
+                        report.source_context = context["SourceContext"]
+                    if "Context" in context.keys() and "Source Group" in context.keys():
+                        report.far_field_sphere = context["Context"]
+                        report.source_group = context["Source Group"]
+                else:
+                    report.far_field_sphere = context
+        elif report_category == "Near Fields":
+            report.near_field = context
+        elif context and isinstance(context, dict):
+            for attribute in context:
+                if hasattr(report, attribute):
+                    report.__setattr__(attribute, context[attribute])
+                else:
+                    self.logger.warning(f"Parameter {attribute} is not available, check syntax.")
+        elif context:
+            if (
+                hasattr(self._app.modeler, "line_names")
+                and hasattr(self._app.modeler, "point_names")
+                and context in self._app.modeler.point_names + self._app.modeler.line_names
+            ):
+                report.polyline = context
+            elif context in [
+                "RL",
+                "Sources",
+                "Vias",
+                "Bondwires",
+                "Probes",
+            ]:
+                report.siwave_dc_category = [
+                    "RL",
+                    "Sources",
+                    "Vias",
+                    "Bondwires",
+                    "Probes",
+                ].index(context)
+        return report
+
+    @pyaedt_function_handler()
+    def create_report(
+        self,
+        expressions: str | list = None,
+        setup_sweep_name: str = None,
+        domain: str = "Sweep",
+        variations: dict = None,
+        primary_sweep_variable: str = None,
+        secondary_sweep_variable: str = None,
+        report_category: str = None,
+        plot_type: str = "Rectangular Plot",
+        context: str | dict = None,
+        subdesign_id: int = None,
+        polyline_points: int = 1001,
+        plot_name: str = None,
+        matplotlib: bool = False,
+        show: bool = True,
+        hide_legend: bool = False,
+        snapshot_path: str = None,
+        width: int = 800,
+        height: int = 450,
+    ) -> (
+        Standard
+        | AMIEyeDiagram
+        | AMIConturEyeDiagram
+        | EMIReceiver
+        | EyeDiagram
+        | CircuitNetlistReport
+        | Fields
+        | FarField
+        | NearField
+        | Spectral
+        | ReportPlotter
+        | bool
+    ):
+        """Create a report in AEDT or in Matplotlib. It can be a 2D plot, 3D plot, polar plot, or a data table.
+
+        Parameters
+        ----------
+        expressions : str or list, optional
+            One or more formulas to add to the report. Example is value = ``"dB(S(1,1))"``.
+        setup_sweep_name : str, optional
+            Setup name with the sweep. The default is ``None``, in which case the first setup and sweep is selected.
+            For Circuit Netlist designs only, specify the solution name as listed in
+            :class:`ansys.aedt.core.generic.aedt_constants.CircuitNetlistConstants`.
+        domain : str, optional
+            Plot Domain. Options are "Sweep", "Time", "DCIR".
+        variations : dict, optional
+            Dictionary of all families including the primary sweep. The default is ``{"Freq": ["All"]}``.
+        primary_sweep_variable : str, optional
+            Name of the primary sweep. The default is ``"Freq"``.
+        secondary_sweep_variable : str, optional
+            Name of the secondary sweep variable in 3D Plots.
+        report_category : str, optional
+            Category of the Report to be created. If `None` default data Report is used.
+            The Report Category can be one of the types available for creating a report depend on the simulation setup.
+            For example for a Far Field Plot in HFSS the UI shows the report category as "Create Far Fields Report".
+            The report category is "Far Fields" in this case.
+            Depending on the setup different categories are available.
+            If ``None`` default category is used (the first item in the Results drop down menu in AEDT).
+        plot_type : str, optional
+            The format of Data Visualization. Default is ``Rectangular Plot``.
+        context : str, dict, optional
+            The default is ``None``.
+            - For HFSS 3D Layout, options are ``"Bondwires"``, ``"Differential Pairs"``,
+            ``None``, ``"Probes"``, ``"RL"``, ``"Sources"``, and ``"Vias"``.
+            - For Q2D or Q3D, specify the name of a reduced matrix.
+            - For a far fields plot, specify the name of an infinite sphere.
+            - For Maxwell 2D/3D Eddy Current solution types this can be provided as a dictionary
+            where the key is the matrix name and value the reduced matrix.
+            - For Circuit Design, this can provide the plots' time range as a dictionary
+            where the keys are ``"time_start"`` and ``"time_stop"``.
+            By default ``"time_start"`` is 0ps and the ``"time_stop"`` is 10ns.
+            - For TDR analysis some dictionary options are "pulse_rise_time","step_time",
+            "time_windowing","maximum_time","use_pulse_in_tdr","differential_pairs". The default values
+            are as they appear manually in the UI.
+        plot_name : str, optional
+            Name of the plot. The default is ``None``.
+        polyline_points : int, optional,
+            Number of points to create the report for plots on polylines on.
+        subdesign_id : int, optional
+            Specify a subdesign ID to export a Touchstone file of this subdesign. Valid for Circuit Only.
+            The default value is ``None``.
+        matplotlib : bool, optional
+            Whether to use AEDT or ReportPlotter to generate the plot. Eye diagrams are not supported.
+        show : bool, optional
+            Whether to show the plot when using ReportPlotter. The default is ``True``.
+            If matplotlib is ``False``, this parameter is ignored.
+        hide_legend : bool, optional
+            Whether to hide the legend when using AEDT reporter. The default is ``False``.
+        snapshot_path : str, optional
+            Full path to image file if a snapshot is needed.
+            The default is ``None``.
+        width : int, optional
+            Snapshot image width. Default is ``800`` which takes Desktop size or 800 pixel.
+        height : int, optional
+            Snapshot image height. Default is ``450`` which takes Desktop size or 450 pixel.
+
+        Returns
+        -------
+        :class:`report_standard.Standard`
+            ``True`` when successful, ``False`` when failed.
+
+        References
+        ----------
+        >>> oModule.CreateReport
+
+        Examples
+        --------
+        HFSS Example
+        >>> from ansys.aedt.core import Hfss
+        >>> hfss = Hfss()
+        >>> hfss.post.create_report("dB(S(1,1))")
+        >>> variations = hfss.available_variations.nominal_values
+        >>> variations["Theta"] = ["All"]
+        >>> variations["Phi"] = ["All"]
+        >>> variations["Freq"] = ["30GHz"]
+        >>> hfss.post.create_report(
+        ...     expressions="db(GainTotal)",
+        ...     setup_sweep_name=hfss.nominal_adaptive,
+        ...     variations=variations,
+        ...     primary_sweep_variable="Phi",
+        ...     secondary_sweep_variable="Theta",
+        ...     report_category="Far Fields",
+        ...     plot_type="3D Polar Plot",
+        ...     context="3D",
+        ... )
+        >>> hfss.post.create_report("S(1,1)", hfss.nominal_sweep, variations=variations, plot_type="Smith Chart")
+        >>> hfss.desktop_class.release_desktop(False, False)
+
+        Maxwell 2D Example - Field report on a polyline
+        >>> from ansys.aedt.core import Maxwell2d
+        >>> m2d = Maxwell2d(version="2026.1")
+        Setup model
+        >>> circ = m2d.modeler.create_circle(origin=[0, 0, 0], radius=5, material="copper")
+        >>> poly = m2d.modeler.create_polyline(points=[[8, 8, 0], [8, -10, 0]], name="Poly1")
+        >>> m2d.assign_current(assignment=circ.name, amplitude=5)
+        >>> region = m2d.modeler.create_region(pad_value=100)
+        >>> m2d.assign_balloon(assignment=region.edges)
+        >>> setup = m2d.create_setup()
+        >>> m2d.analyze_setup(setup.name)
+        Create a field report on the polyline
+        >>> report = m2d.post.create_report(
+        ...     expressions="Mag_B",
+        ...     setup_sweep_name=m2d.nominal_adaptive,
+        ...     plot_type="Rectangular Plot",
+        ...     report_category="Fields",
+        ...     context=poly.name,
+        ...     primary_sweep_variable="Distance",
+        ... )
+        >>> m2d.release_desktop(False, False)
+
+        Circuit Netlist Example
+        >>> from ansys.aedt.core import CircuitNetlist
+        >>> from ansys.aedt.core.generic.aedt_constants import CircuitNetlistConstants
+        >>> cir = CircuitNetlist(version="2026.1")
+        To get the available report solution there are two options:
+        >>> solutions = cir.post.available_report_solutions()[0]
+        or
+        >>> solutions = CircuitNetlistConstants.solution_types["NexximLNA"]["name"]
+        Get the available report categories
+        >>> categories = cir.post.available_report_types(solution=solutions)[0]
+        Get the available report quantities for a specific category and solution
+        >>> quantities = cir.post.available_report_quantities(quantities_category="Noise", solution=solution)
+        Create the report for each quantity
+        >>> for quantity in quantities:
+        ...     cir.post.create_report(
+        ...         expressions=f"dB({quantity})",
+        ...         setup_sweep_name="NexximLNA",
+        ...         plot_type="Rectangular Plot",
+        ...         report_category="Noise",
+        ...         domain="Sweep",
+        ...         primary_sweep_variable="Freq",
+        ...     )
+        >>> cir.desktop_class.release_desktop(False, False)
+
+        """
+        if self._app.design_type == "Circuit Netlist" and (
+            not setup_sweep_name or setup_sweep_name not in CircuitNetlistConstants.solution_types
+        ):
+            raise ValueError(
+                f"For Circuit Netlist design, setup_sweep_name should be one of "
+                f"{CircuitNetlistConstants.solution_types.keys()}"
+            )
+
+        report = self._get_report_object(
+            expressions=expressions,
+            setup_sweep_name=setup_sweep_name,
+            domain=domain,
+            variations=variations,
+            primary_sweep_variable=primary_sweep_variable,
+            secondary_sweep_variable=secondary_sweep_variable,
+            report_category=report_category,
+            context=context,
+            subdesign_id=subdesign_id,
+            polyline_points=polyline_points,
+        )
+        report.report_type = plot_type
+
+        if (
+            self._app.solution_type == "Eigenmode"
+            and report.report_category == "EigenMode Parameters"
+            and "Phase" in report.variations
+        ):
+            # Phase is not available in Eigenmode Parameters report
+            del report.variations["Phase"]
+
+        if matplotlib:
+            return self._report_plotter(report, show=show, snapshot_path=snapshot_path, width=width, height=height)
+
+        result = report.create(plot_name)
+        if hide_legend:
+            report.hide_legend()
+
+        if snapshot_path:
+            out = self.export_report_to_jpg(snapshot_path, report.plot_name, width=width, height=height)
+            if not out:
+                self.logger.error("Failed to export report to image.")
+        if result:
+            if report.traces:
+                return report
+            else:
+                self.logger.error("Failed to create traces on the report. Check input parameters")
+        return False
+
+    @pyaedt_function_handler()
+    def get_solution_data(
+        self,
+        expressions: str | list = None,
+        setup_sweep_name: str | None = None,
+        domain: str | None = None,
+        variations: dict | None = None,
+        primary_sweep_variable: str | None = None,
+        report_category: str | None = None,
+        context: str | dict | None = None,
+        subdesign_id: int | None = None,
+        polyline_points: int = 1001,
+        math_formula: str | None = None,
+    ) -> SolutionData | bool:
+        """Get a simulation result from a solved setup and cast it in a ``SolutionData`` object.
+
+        Data to be retrieved from Electronics Desktop are any simulation results available in that
+        specific simulation context.
+        Most of the argument have some defaults which works for most of the ``Standard`` report quantities.
+
+        Parameters
+        ----------
+        expressions : str or list, optional
+            One or more formulas to add to the report. Example is value ``"dB(S(1,1))"`` or a list of values.
+            Default is ``None`` which returns all traces.
+        setup_sweep_name : str, optional
+            Name of the setup. The default is ``None``, in which case the ``nominal_adaptive``
+            setup is used. Be sure to build a setup string in the form of
+            ``"SetupName : SetupSweep"``, where ``SetupSweep`` is the sweep name to
+            use in the export or ``LastAdaptive``.
+        domain : str, optional
+            Plot Domain. Options are "Sweep" for frequency domain related results and "Time" for transient related data.
+        variations : dict, optional
+            Dictionary of all families including the primary sweep.
+            The default is ``None`` which uses the nominal variations of the setup.
+        primary_sweep_variable : str, optional
+            Name of the primary sweep. The default is ``"None"`` which, depending on the context,
+            internally assigns the primary sweep to:
+            1. ``Freq`` for frequency domain results,
+            2. ``Time`` for transient results,
+            3. ``Theta`` for radiation patterns,
+            4. ``distance`` for field plot over a polyline.
+        report_category : str, optional
+            Category of the Report to be created. If ``None`` default data Report is used.
+            The Report Category can be one of the types available for creating a report depend on the simulation setup.
+            For example for a Far Field Plot in HFSS the UI shows the report category as "Create Far Fields Report".
+            The report category is "Far Fields" in this case.
+            Depending on the setup different categories are available.
+            If ``None`` default category is used (the first item in the Results drop down menu in AEDT).
+            To get the list of available categories user can use method ``available_report_types``.
+        context : str, dict, optional
+            This is the context of the report.
+            The default is ``None``. It can be:
+            1. `None`
+            2. ``"Differential Pairs"``
+            3. Reduce Matrix Name for Q2d/Q3d solution
+            4. Infinite Sphere name for Far Fields Plot.
+            5. Dictionary. If dictionary is passed, key is the report property name and value is property value.
+            6. For Maxwell 2D/3D eddy current solution types, this can be provided as a dictionary,
+            where the key is the matrix name and value the reduced matrix.
+        subdesign_id : int, optional
+            Subdesign ID for exporting a Touchstone file of this subdesign.
+            This parameter is valid for ``Circuit`` only.
+            The default value is ``None``.
+        polyline_points : int, optional
+            Number of points on which to create the report for plots on polylines.
+            This parameter is valid for ``Fields`` plot only.
+        math_formula : str, optional
+            One of the available AEDT mathematical formulas to apply. For example, ``abs, dB``.
+
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.visualization.post.solution_data.SolutionData`
+            Solution Data object.
+
+        References
+        ----------
+        >>> oModule.GetSolutionDataPerVariation
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Hfss
+        >>> hfss = Hfss()
+        >>> hfss.post.create_report("dB(S(1,1))")
+        >>> variations = hfss.available_variations.nominal_values
+        >>> variations["Theta"] = ["All"]
+        >>> variations["Phi"] = ["All"]
+        >>> variations["Freq"] = ["30GHz"]
+        >>> data1 = hfss.post.get_solution_data(
+        ...     "GainTotal",
+        ...     hfss.nominal_adaptive,
+        ...     variations=variations,
+        ...     primary_sweep_variable="Phi",
+        ...     context="3D",
+        ...     report_category="Far Fields",
+        ... )
+
+        >>> data2 = hfss.post.get_solution_data(
+        ...     "S(1,1)",
+        ...     hfss.nominal_sweep,
+        ...     variations=variations,
+        ... )
+        >>> data2.plot()
+        >>> hfss.desktop_class.release_desktop(False, False)
+
+        >>> from ansys.aedt.core import Maxwell2d
+        >>> m2d = Maxwell2d()
+        >>> data3 = m2d.post.get_solution_data(
+        ...     "InputCurrent(PHA)",
+        ...     domain="Time",
+        ...     primary_sweep_variable="Time",
+        ... )
+        >>> data3.plot("InputCurrent(PHA)")
+        >>> m2d.desktop_class.release_desktop(False, False)
+
+        >>> from ansys.aedt.core import Circuit
+        >>> circuit = Circuit()
+        >>> context = {"algorithm": "FFT", "max_frequency": "100MHz", "time_stop": "2.5us", "time_start": "0ps"}
+        >>> spectralPlotData = circuit.post.get_solution_data(
+        ...     expressions="V(Vprobe1)", domain="Spectral", primary_sweep_variable="Spectrum", context=context
+        ... )
+        >>> circuit.desktop_class.release_desktop(False, False)
+
+        >>> from ansys.aedt.core import Maxwell3d
+        >>> m3d = Maxwell3d(solution_type="EddyCurrent")
+        >>> rectangle1 = m3d.modeler.create_rectangle(0, [0.5, 1.5, 0], [2.5, 5], name="Sheet1")
+        >>> rectangle2 = m3d.modeler.create_rectangle(0, [9, 1.5, 0], [2.5, 5], name="Sheet2")
+        >>> rectangle3 = m3d.modeler.create_rectangle(0, [16.5, 1.5, 0], [2.5, 5], name="Sheet3")
+        >>> m3d.assign_current(rectangle1.faces[0], amplitude=1, name="Cur1")
+        >>> m3d.assign_current(rectangle2.faces[0], amplitude=1, name="Cur2")
+        >>> m3d.assign_current(rectangle3.faces[0], amplitude=1, name="Cur3")
+        >>> L = m3d.assign_matrix(assignment=["Cur1", "Cur2", "Cur3"], matrix_name="Matrix1")
+        >>> out = L.join_series(sources=["Cur1", "Cur2"], matrix_name="ReducedMatrix1")
+        >>> expressions = m3d.post.available_report_quantities(
+        ...     report_category="EddyCurrent", display_type="Data Table", context={"Matrix1": "ReducedMatrix1"}
+        ... )
+        >>> data = m3d.post.get_solution_data(expressions=expressions, context={"Matrix1": "ReducedMatrix1"})
+        >>> m3d.desktop_class.release_desktop(False, False)
+
+        """
+        report = self._get_report_object(
+            expressions=expressions,
+            setup_sweep_name=setup_sweep_name,
+            domain=domain,
+            variations=variations,
+            primary_sweep_variable=primary_sweep_variable,
+            secondary_sweep_variable=None,
+            report_category=report_category,
+            context=context,
+            subdesign_id=subdesign_id,
+            polyline_points=polyline_points,
+        )
+        if math_formula:
+            expressions = [f"{math_formula}({i})" for i in report.expressions]
+            report.expressions = expressions
+        return report.get_solution_data()
+
+    @pyaedt_function_handler()
+    def create_report_from_configuration(
+        self,
+        input_file: str = None,
+        report_settings: dict = None,
+        solution_name: str = None,
+        name: str = None,
+        matplotlib: bool = False,
+        show: bool = True,
+        hide_legend: bool = False,
+        snapshot_path: str = None,
+        width: int = 800,
+        height: int = 450,
+    ) -> (
+        Standard
+        | AMIEyeDiagram
+        | AMIConturEyeDiagram
+        | EMIReceiver
+        | EyeDiagram
+        | CircuitNetlistReport
+        | Fields
+        | FarField
+        | NearField
+        | Spectral
+        | ReportPlotter
+        | None
+        | bool
+    ):
+        """Create a report based on a JSON file, TOML file, RPT file, or dictionary of properties.
+
+        Parameters
+        ----------
+        input_file : str, optional
+            Path to the JSON, TOML, or RPT file containing report settings.
+        report_settings : dict, optional
+            Dictionary containing report settings.
+        solution_name : str, optional
+            Setup name to use.
+        name : str, optional
+            Report name. The default is ``None``, in which case the
+            default name is used.
+        matplotlib : bool, optional
+            Whether to use AEDT or ReportPlotter to generate the plot. Eye diagrams are not supported.
+        show : bool, optional
+            Whether to show the plot when using ReportPlotter. The default is ``True``.
+            If matplotlib is ``False``, this parameter is ignored.
+        hide_legend : bool, optional
+            Whether to hide the legend when using AEDT reporter. The default is ``False``.
+        snapshot_path : str, optional
+            Full path to image file if a snapshot is needed.
+            The default is ``None``.
+        width : int, optional
+            Image width. Default is ``800`` which takes Desktop size or 800 pixel.
+        height : int, optional
+            Image height. Default is ``450`` which takes Desktop size or 450 pixel.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modules.report_templates.Standard` or None
+            Report object if succeeded.
+
+        Examples
+        --------
+        Create report from JSON file.
+        >>> from ansys.aedt.core import Hfss
+        >>> hfss = Hfss()
+        >>> hfss.post.create_report_from_configuration(
+        ...     r"C:\\temp\\my_report.json", solution_name="Setup1 : LastAdpative"
+        ... )
+
+        Create report from RPT file.
+        >>> from ansys.aedt.core import Hfss
+        >>> hfss = Hfss()
+        >>> hfss.post.create_report_from_configuration(r"C:\\temp\\my_report.rpt")
+
+        Create report from dictionary.
+        >>> from ansys.aedt.core import Hfss
+        >>> from ansys.aedt.core.generic.file_utils import read_json
+        >>> hfss = Hfss()
+        >>> dict_vals = read_json("Report_Simple.json")
+        >>> hfss.post.create_report_from_configuration(report_settings=dict_vals)
+
+        """
+        if not report_settings and not input_file:  # pragma: no cover
+            self.logger.error("Either a file or a dictionary must be passed as input.")
+            return False
+
+        props = {}
+        if input_file:
+            _, file_extension = os.path.splitext(input_file)
+            if file_extension == ".rpt":
+                old_expressions = self.all_report_names
+                self.oreportsetup.CreateReportFromTemplate(input_file)
+                new_expressions = [item for item in self.all_report_names if item not in old_expressions]
+                if new_expressions:
+                    report_name = new_expressions[0]
+                    self.__plots = None
+                    report = None
+                    for plot in self.plots:
+                        if plot.plot_name == report_name:
+                            report = plot
+                            break
+                    return report
+            else:
+                props = read_configuration_file(input_file)
+            if report_settings:
+                props = self.__apply_settings(props, report_settings)
+
+        else:
+            props = report_settings
+
+        if (
+            isinstance(props.get("expressions", {}), list)
+            and props["expressions"]
+            and isinstance(props["expressions"][0], str)
+        ):  # pragma: no cover
+            props["expressions"] = {i: {} for i in props["expressions"]}
+        elif isinstance(props.get("expressions", {}), str):  # pragma: no cover
+            props["expressions"] = {props["expressions"]: {}}
+
+        _dict_items_to_list_items(props, "expressions")
+
+        if not solution_name:
+            if "Fields" not in props.get("report_category", ""):
+                solution_name = self._app.nominal_sweep
+            else:
+                solution_name = self._app.nominal_adaptive
+        else:
+            solution_name = self._get_setup_from_sweep_name(solution_name)  # If only the sweep name is passed.
+
+        if props.get("report_category", None) and props["report_category"] in TEMPLATES_BY_NAME:
+            if props.get("context", {"context": {}}).get("domain", "") == "Spectral":
+                report_temp = TEMPLATES_BY_NAME["Spectrum"]
+            elif (
+                "AMIAnalysis" in self._app.get_setup(solution_name.split(":")[0].strip()).props
+                or "QuickEyeAnalysis" in self._app.get_setup(solution_name.split(":")[0].strip()).props
+            ) and props["report_category"] == "Standard":
+                report_temp = TEMPLATES_BY_NAME["AMI Contour"]
+            elif (
+                "AMIAnalysis" in self._app.get_setup(solution_name.split(":")[0].strip()).props
+                or "QuickEyeAnalysis" in self._app.get_setup(solution_name.split(":")[0].strip()).props
+            ):
+                report_temp = TEMPLATES_BY_NAME["Statistical Eye"]
+            else:
+                report_temp = TEMPLATES_BY_NAME[props["report_category"]]
+            report = report_temp(self, props["report_category"], solution_name)
+
+            def _update_props(prop_in, props_out) -> None:
+                for k, v in prop_in.items():
+                    if isinstance(v, dict):
+                        if k not in props_out:
+                            props_out[k] = {}
+                        _update_props(v, props_out[k])
+                    else:
+                        props_out[k] = v
+
+            if (
+                props.get("context", {"context": {}}).get("secondary_sweep", "") == ""
+                and props.get("report_type", "") != "Rectangular Contour Plot"
+            ):
+                report._legacy_props["context"]["secondary_sweep"] = ""
+            if props.get("context", {}).get("primary_sweep", "Freq") in [
+                "Time",
+                "__UnitInterval",
+                "__Amplitude",
+            ] and "Freq" in report._legacy_props.get("context", {}).get("variations", {}):
+                del report._legacy_props["context"]["variations"]["Freq"]
+
+            _update_props(props, report._legacy_props)
+
+            nominal_values = self._app.available_variations.nominal_variation(dependent_params=False)
+
+            for el, k in nominal_values.items():
+                if (
+                    report._legacy_props.get("context", None)
+                    and report._legacy_props["context"].get("variations", None)
+                    and el not in report._legacy_props["context"]["variations"]
+                ):
+                    report._legacy_props["context"]["variations"][el] = k
+
+            _ = report.expressions
+
+            if matplotlib:
+                try:
+                    return self._report_plotter(
+                        report, show=show, snapshot_path=snapshot_path, width=width, height=height
+                    )
+                except Exception:
+                    self.logger.error("Failed to create report.")
+                    return False
+            report.create(name)
+
+            if report.report_type != "Data Table":
+                report._update_traces()
+                self.oreportsetup.UpdateReports(report.plot_name)
+
+            self.logger.info(f"Report {report.plot_name} created successfully.")
+            if hide_legend:
+                report.hide_legend()
+            if snapshot_path:
+                out = self.export_report_to_jpg(snapshot_path, report.plot_name, width=width, height=height)
+                if not out:
+                    self.logger.error("Failed to export report to image.")
+            return report
+
+        self.logger.error("Failed to create report.")
+        return False  # pragma: no cover
+
+    @pyaedt_function_handler()
+    def _rename_internal_object(self, name: str) -> str:
+        if self._app.desktop_class.aedt_version < "2027.1":
+            return re.sub(r"(?<!\\)/", r"\\/", name.replace("\\", "\\\\"))
+        return name
+
+    @requires_graphical_dependency("matplotlib")
+    @pyaedt_function_handler()
+    def _report_plotter(self, report, show: bool = True, snapshot_path="", width=800, height=450) -> ReportPlotter:
+        """Create a Matplotlib plot from a report.
+
+        Parameters
+        ----------
+        report : :class:`ansys.aedt.core.modules.report_templates.Standard`
+            Report object.
+        show : bool, optional
+            Whether to show the plot. The default is ``True``.
+                snapshot_path : str, optional
+        snapshot_path : str, optional
+            Full path to image file if a snapshot is needed.
+            The default is ``None``.
+        width : int, optional
+            Image width. Default is ``800`` which takes Desktop size or 800 pixel.
+        height : int, optional
+            Image height. Default is ``450`` which takes Desktop size or 450 pixel.
+        """
+        from ansys.aedt.core.visualization.plot.matplotlib import ReportPlotter
+
+        sols = report.get_solution_data()
+        if "__EyeOpening" in report.variations:
+            report.variations["__EyeOpening"] = ["All"]
+        report_plotter = ReportPlotter(solution_data=sols)
+        report_plotter.width = width
+        report_plotter.height = height
+        if report._legacy_props.get("general", {}).get("axisx", {}).get("font_size"):
+            report_plotter.text_size = report._legacy_props["general"].get("axisx", {}).get("font_size")
+        if report._legacy_props.get("general", {}).get("header", {}).get("title_size"):
+            report_plotter.title_size = report._legacy_props["general"].get("header", {}).get("title_size")
+
+        report_plotter.title = report._legacy_props.get("plot_name", "PyAEDT Report")
+        try:
+            report_plotter.general_back_color = [
+                i / 255 for i in report._legacy_props["general"]["appearance"]["background_color"]
+            ]
+        except KeyError:
+            pass
+        try:
+            report_plotter.general_plot_color = [
+                i / 255 for i in report._legacy_props["general"]["appearance"]["plot_color"]
+            ]
+        except KeyError:
+            pass
+        try:
+            report_plotter.grid_enable_major_x = report._legacy_props["general"]["grid"]["major_x"]
+        except KeyError:
+            pass
+        try:
+            report_plotter.grid_enable_minor_x = report._legacy_props["general"]["grid"]["minor_x"]
+        except KeyError:
+            pass
+        try:
+            report_plotter.grid_enable_major_y = report._legacy_props["general"]["grid"]["major_y"]
+        except KeyError:
+            pass
+        try:
+            report_plotter.grid_enable_minor_y = report._legacy_props["general"]["grid"]["minor_y"]
+        except KeyError:
+            pass
+        try:
+            report_plotter.grid_color = [i / 255 for i in report._legacy_props["general"]["grid"]["major_color"]]
+        except KeyError:
+            pass
+        try:
+            report_plotter.show_legend = True if report._legacy_props["general"]["legend"] else False
+        except KeyError:
+            pass
+        for curve in sols.expressions:
+            sw = [sols.primary_sweep_values]
+            if "__Amplitude" in sols.intrinsics and "__UnitInterval" in sols.intrinsics:
+                x, y = sols.get_expression_data(sols.expressions[0], sweeps=["__UnitInterval", "__Amplitude"])
+                sw = [x[:, 0], x[:, 1], y]
+                props = {
+                    "x_label": "UnitInterval",
+                    "y_label": "Amplitude",
+                    "z_label": curve,
+                }
+            else:
+                props = {
+                    "x_label": sols.primary_sweep,
+                    "y_label": curve,
+                }
+                sw.append(sols.get_expression_data(curve)[1])
+            pp = [i for i in report._legacy_props["expressions"] if i["name"] == curve]
+            if pp:
+                pp = pp[0]
+                try:
+                    props["trace_width"] = pp["width"]
+                except KeyError:
+                    pass
+                try:
+                    props["show_symbol"] = pp["show_symbol"]
+                except KeyError:
+                    props["show_symbol"] = False
+                try:
+                    props["trace_color"] = [i / 255 for i in pp["color"]]
+                except KeyError:
+                    pass
+                try:
+                    props["fill_symbol"] = pp["fill_symbol"]
+                except KeyError:
+                    pass
+                try:
+                    props["symbol_color"] = [i / 255 for i in pp["symbol_color"]]
+                except KeyError:
+                    pass
+                try:
+                    styles = {"Solid": "-", "Dash": "--", "DotDash": "-.", "DotDot": ":"}
+                    props["trace_style"] = styles[pp["trace_style"]]
+                except KeyError:
+                    pass
+                try:
+                    markers = {
+                        "Box": ",",
+                        "Circle": "o",
+                        "VerticalUpTriangle": "^",
+                        "VerticalDownTriangle": "v",
+                        "HorizontalLeftTriangle": "<",
+                        "HorizontalRightTriangle": ">",
+                    }
+                    props["symbol_style"] = markers[pp["symbol_style"]]
+                except KeyError:
+                    pass
+            report_plotter.add_trace(sw, 0, properties=props, name=curve)
+        for name, line in report._legacy_props.get("limitLines", {}).items():
+            props = {}
+            try:
+                props["trace_width"] = line["width"]
+            except KeyError:
+                pass
+            try:
+                props["trace_color"] = [i / 255 for i in line["color"]]
+            except KeyError:
+                pass
+            try:
+                report_plotter.add_limit_line([line["xpoints"], line["ypoints"]], 0, properties=props, name=name)
+            except KeyError:
+                self.logger.warning("Equation lines not supported yet.")
+        if (
+            "eye_mask" in report._legacy_props
+            and report._legacy_props["eye_mask"]
+            and report.report_category in ["Eye Diagram", "Statistical Eye"]
+            or ("quantity_type" in report._legacy_props and report.report_type == "Rectangular Contour Plot")
+        ):
+            if "__Amplitude" in sols.units_sweeps or "Time" in sols.units_sweeps:
+                if report._legacy_props["eye_mask"].get("yunits", ""):
+                    unit_time = sols.units_sweeps["Time"] if "Time" in sols.units_sweeps else ""
+                    report._legacy_props["eye_mask"]["points"] = [
+                        [
+                            unit_converter(
+                                i[0],
+                                unit_system="Time",
+                                input_units=report._legacy_props["eye_mask"]["xunits"]
+                                if report._legacy_props["eye_mask"]["xunits"]
+                                else "s",
+                                output_units=unit_time if unit_time else "s",
+                            ),
+                            unit_converter(
+                                i[1],
+                                unit_system="Voltage",
+                                input_units=report._legacy_props["eye_mask"]["yunits"],
+                                output_units=sols.units_sweeps["__Amplitude"]
+                                if "__Amplitude" in sols.units_sweeps
+                                else sols.units_data[sols.expressions[0]],
+                            ),
+                        ]
+                        for i in report._legacy_props["eye_mask"]["points"]
+                    ]
+                if report._legacy_props["eye_mask"].get("upper_limit"):
+                    report._legacy_props["eye_mask"]["upper_limit"] = unit_converter(
+                        report._legacy_props["eye_mask"]["upper_limit"],
+                        unit_system="Voltage",
+                        input_units=report._legacy_props["eye_mask"]["yunits"],
+                        output_units=sols.units_sweeps["__Amplitude"]
+                        if "__Amplitude" in sols.units_sweeps
+                        else sols.units_data[sols.expressions[0]],
+                    )
+                if report._legacy_props["eye_mask"].get("lower_limit"):
+                    report._legacy_props["eye_mask"]["lower_limit"] = unit_converter(
+                        report._legacy_props["eye_mask"]["lower_limit"],
+                        unit_system="Voltage",
+                        input_units=report._legacy_props["eye_mask"]["yunits"],
+                        output_units=sols.units_sweeps["__Amplitude"]
+                        if "__Amplitude" in sols.units_sweeps
+                        else sols.units_data[sols.expressions[0]],
+                    )
+            report._legacy_props["eye_mask"]["xunits"] = (
+                sols.units_sweeps["Time"] if "Time" in sols.units_sweeps else ""
+            )
+            report._legacy_props["eye_mask"]["yunits"] = (
+                sols.units_sweeps["__Amplitude"]
+                if "__Amplitude" in sols.units_sweeps
+                else sols.units_data[sols.expressions[0]]
+            )
+            report_plotter.add_eye_mask(report._legacy_props["eye_mask"])
+        if report.report_category in ["Eye Diagram", "Statistical Eye"]:
+            if "Time" in sols.units_sweeps and report._legacy_props["context"].get("unit_interval"):
+                value_with_unit = report._legacy_props["context"].get("unit_interval")
+                value, unit = decompose_variable_value(value_with_unit)
+                report_plotter.unit_interval = float(
+                    unit_converter(
+                        value,
+                        unit_system="Time",
+                        input_units=unit if unit else "s",
+                        output_units=sols.units_sweeps["Time"],
+                    )
+                )
+            if "Time" in sols.units_sweeps and report._legacy_props["context"].get("offset"):
+                value_with_unit = report._legacy_props["context"].get("offset")
+                value, unit = decompose_variable_value(value_with_unit)
+                report_plotter.offset = float(
+                    unit_converter(
+                        value,
+                        unit_system="Time",
+                        input_units=unit if unit else "s",
+                        output_units=sols.units_sweeps["Time"],
+                    )
+                )
+
+            _ = report_plotter.plot_eye_diagram(show=show, snapshot_path=snapshot_path)
+        elif report._legacy_props.get("report_type", "Rectangular Plot") == "Rectangular Plot":
+            _ = report_plotter.plot_2d(show=show, snapshot_path=snapshot_path)
+        elif report._legacy_props.get("report_type", "Rectangular Plot") == "Polar Plot":
+            _ = report_plotter.plot_polar(show=show, snapshot_path=snapshot_path)
+        elif report._legacy_props.get("report_type", "Rectangular Plot") == "Rectangular Contour Plot":
+            _ = report_plotter.plot_contour(show=show, snapshot_path=snapshot_path)
+        elif report._legacy_props.get("report_type", "Rectangular Plot") in ["3D Polar Plot", "3D Spherical Plot"]:
+            _ = report_plotter.plot_3d(show=show, snapshot_path=snapshot_path)
+        elif report.report_category in ["Eye Diagram", "Statistical Eye"]:
+            _ = report_plotter.plot_eye_diagram(show=show, snapshot_path=snapshot_path)
+        else:
+            self.logger.warning("Plot type not supported.")
+        return report_plotter
+
+    @staticmethod
+    @pyaedt_function_handler()
+    def __convert_dict_to_report_sel(sweeps):
+        from ansys.aedt.core import Quantity
+
+        if isinstance(sweeps, list):
+            return sweeps
+        sweep_list = []
+        for el, val in sweeps.items():
+            sweep_list.append(el + ":=")
+            if isinstance(val, list):
+                sweep_list.append([str(i) if isinstance(i, Quantity) else i for i in val])
+            else:
+                sweep_list.append([str(val) if isinstance(val, Quantity) else val])
+        return sweep_list
+
+    @staticmethod
+    @pyaedt_function_handler()
+    def __apply_settings(props, report_settings):
+        for k, v in report_settings.items():
+            if k in props:
+                if isinstance(v, dict):
+                    props[k] = super().__apply_settings(props[k], v)
+                else:
+                    props[k] = v
+            else:
+                props[k] = v
+        return props
+
+
+class Reports(PyAedtBase):
+    """Provides the names of default solution types.
+
+    Examples
+    --------
+    >>> from ansys.aedt.core.visualization.post.common import Reports
+    >>> obj = Reports()
+
+    """
+
+    def __init__(self, post_app, design_type) -> None:
+        self._post_app = post_app
+        self._design_type = design_type
+        self._templates = self._post_app._app._design_type.report_templates
+
+    @pyaedt_function_handler()
+    def _retrieve_default_expressions(self, expressions, report, setup_sweep_name):
+        if expressions:
+            return expressions
+        is_siwave_dc = False
+        if self._post_app._app.design_type != "Circuit Netlist":
+            setup_only_name = setup_sweep_name.split(":")[0].strip()
+            get_setup = self._post_app._app.get_setup(setup_only_name)
+            if (
+                "SolveSetupType" in get_setup.props and get_setup.props["SolveSetupType"] == "SiwaveDCIR"
+            ):  # pragma: no cover
+                is_siwave_dc = True
+        return self._post_app.available_report_quantities(
+            solution=setup_sweep_name, context=report._context, is_siwave_dc=is_siwave_dc
+        )
+
+    @pyaedt_function_handler()
+    def standard(self, expressions: str | list = None, setup: str = None) -> Standard:
+        """Create a standard or default report object.
+
+        Parameters
+        ----------
+        expressions : str or list
+            Expression List to add into the report. The expression can be any of the available formula
+            you can enter into the Electronics Desktop Report Editor.
+        setup : str, optional
+            Name of the setup. The default is ``None``, in which case the ``nominal_adaptive``
+            setup is used. Be sure to build a setup string in the form of
+            ``"SetupName : SetupSweep"``, where ``SetupSweep`` is the sweep name to
+            use in the export or ``LastAdaptive``.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modules.report_templates.Standard`
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> cir = Circuit(my_project)
+        >>> report = cir.post.reports_by_category.standard("dB(S(1,1))", "LNA")
+        >>> report.create()
+        >>> solutions = report.get_solution_data()
+        >>> report2 = cir.post.reports_by_category.standard(["dB(S(2,1))", "dB(S(2,2))"], "LNA")
+
+        """
+        if not setup:
+            setup = self._post_app._app.nominal_sweep
+        rep = None
+        if "Standard" in self._templates:
+            rep = report_standard.Standard(self._post_app, "Standard", setup)
+
+        elif self._post_app._app.design_solutions.report_type:
+            rep = report_standard.Standard(self._post_app, self._post_app._app.design_solutions.report_type, setup)
+        rep.expressions = self._retrieve_default_expressions(expressions, rep, setup)
+        return rep
+
+    @pyaedt_function_handler()
+    def monitor(self, expressions: str | list = None, setup: str = None) -> Standard:
+        """Create an Icepak Monitor Report object.
+
+        Parameters
+        ----------
+        expressions : str or list
+            One or more expressions to add to the report. The expression can be any of the available formula
+            you can enter into the Electronics Desktop Report Editor.
+        setup : str, optional
+            Name of the setup. The default is ``None``, in which case the ``nominal_adaptive``
+            setup is used. Be sure to build a setup string in the form of
+            ``"SetupName : SetupSweep"``, where ``SetupSweep`` is the sweep name to
+            use in the export or ``LastAdaptive``.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modules.report_templates.Standard`
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Icepak
+        >>> ipk = Icepak(my_project)
+        >>> report = ipk.post.reports_by_category.monitor(["monitor_surf.Temperature", "monitor_point.Temperature"])
+        >>> report = report.create()
+
+        """
+        if not setup:
+            setup = self._post_app._app.nominal_sweep
+        rep = None
+        if "Monitor" in self._templates:
+            rep = report_standard.Standard(self._post_app, "Monitor", setup)
+            rep.expressions = self._retrieve_default_expressions(expressions, rep, setup)
+        return rep
+
+    @pyaedt_function_handler()
+    def fields(self, expressions: str | list = None, setup: str = None, polyline: str = None) -> Fields:
+        """Create a Field Report object.
+
+        Parameters
+        ----------
+        expressions : str or list
+            One or more expressions to add to the report. The expression can be any of the available formula
+            you can enter into the Electronics Desktop Report Editor.
+        setup : str, optional
+            Name of the setup. The default is ``None``, in which case the ``nominal_adaptive``
+            setup is used. Be sure to build a setup string in the form of
+            ``"SetupName : SetupSweep"``, where ``SetupSweep`` is the sweep name to
+            use in the export or ``LastAdaptive``.
+        polyline : str, optional
+            Name of the polyline to plot the field on.
+            If a name is not provided, the report might be incorrect.
+            The default value is ``None``.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modules.report_templates.Fields`
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Hfss
+        >>> hfss = Hfss(my_project)
+        >>> report = hfss.post.reports_by_category.fields("Mag_E", "Setup : LastAdaptive", "Polyline1")
+        >>> report.create()
+        >>> solutions = report.get_solution_data()
+
+        """
+        if not setup:
+            # setup = self._post_app._app.nominal_sweep
+            setup = self._post_app._app.nominal_adaptive
+        rep = None
+        if "Fields" in self._templates:
+            rep = report_field.Fields(self._post_app, "Fields", setup)
+            rep.polyline = polyline
+            rep.expressions = self._retrieve_default_expressions(expressions, rep, setup)
+        return rep
+
+    @pyaedt_function_handler()
+    def cg_fields(self, expressions: str | list = None, setup: str | None = None, polyline: str = None) -> Fields:
+        """Create a CG Field Report object in Q3D and Q2D.
+
+        Parameters
+        ----------
+        expressions : str or list
+            Expression List to add into the report. The expression can be any of the available formula
+            you can enter into the Electronics Desktop Report Editor.
+        setup : str, optional
+            Name of the setup. The default is ``None``, in which case the ``nominal_adaptive``
+            setup is used. Be sure to build a setup string in the form of
+            ``"SetupName : SetupSweep"``, where ``SetupSweep`` is the sweep name to
+            use in the export or ``LastAdaptive``.
+        polyline : str, optional
+            Name of the polyline to plot the field on.
+            If a name is not provided, the report might be incorrect.
+            The default value is ``None``.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modules.report_templates.Fields`
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Q3d
+        >>> q3d = Q3d(my_project)
+        >>> report = q3d.post.reports_by_category.cg_fields("SmoothQ", "Setup : LastAdaptive", "Polyline1")
+        >>> report.create()
+        >>> solutions = report.get_solution_data()
+
+        """
+        if not setup:
+            setup = self._post_app._app.nominal_sweep
+        rep = None
+        if "CG Fields" in self._templates:
+            rep = report_field.Fields(self._post_app, "CG Fields", setup)
+            rep.polyline = polyline
+            rep.expressions = self._retrieve_default_expressions(expressions, rep, setup)
+        return rep
+
+    @pyaedt_function_handler()
+    def dc_fields(self, expressions: str | list = None, setup: str | None = None, polyline: str = None) -> Fields:
+        """Create a DC Field Report object in Q3D.
+
+        Parameters
+        ----------
+        expressions : str or list
+            Expression List to add into the report. The expression can be any of the available formula
+            you can enter into the Electronics Desktop Report Editor.
+        setup : str, optional
+            Name of the setup. The default is ``None``, in which case the ``nominal_adaptive``
+            setup is used. Be sure to build a setup string in the form of
+            ``"SetupName : SetupSweep"``, where ``SetupSweep`` is the sweep name to
+            use in the export or ``LastAdaptive``.
+        polyline : str, optional
+            Name of the polyline to plot the field on.
+            If a name is not provided, the report might be incorrect.
+            The default value is ``None``.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modules.report_templates.Fields`
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Q3d
+        >>> q3d = Q3d(my_project)
+        >>> report = q3d.post.reports_by_category.dc_fields("Mag_VolumeJdc", "Setup : LastAdaptive", "Polyline1")
+        >>> report.create()
+        >>> solutions = report.get_solution_data()
+
+        """
+        if not setup:
+            setup = self._post_app._app.nominal_sweep
+        rep = None
+        if "DC R/L Fields" in self._templates:
+            rep = report_field.Fields(self._post_app, "DC R/L Fields", setup)
+            rep.polyline = polyline
+            rep.expressions = self._retrieve_default_expressions(expressions, rep, setup)
+        return rep
+
+    @pyaedt_function_handler()
+    def rl_fields(self, expressions: str | list = None, setup: str | None = None, polyline: str = None) -> Fields:
+        """Create an AC RL Field Report object in Q3D and Q2D.
+
+        Parameters
+        ----------
+        expressions : str or list
+            Expression List to add into the report. The expression can be any of the available formula
+            you can enter into the Electronics Desktop Report Editor.
+        setup : str, optional
+            Name of the setup. The default is ``None``, in which case the ``nominal_adaptive``
+            setup is used. Be sure to build a setup string in the form of
+            ``"SetupName : SetupSweep"``, where ``SetupSweep`` is the sweep name to
+            use in the export or ``LastAdaptive``.
+        polyline : str, optional
+            Name of the polyline to plot the field on.
+            If a name is not provided, the report might be incorrect.
+            The default value is ``None``.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modules.report_templates.Fields`
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Q3d
+        >>> q3d = Q3d(my_project)
+        >>> report = q3d.post.reports_by_category.rl_fields("Mag_SurfaceJac", "Setup : LastAdaptive", "Polyline1")
+        >>> report.create()
+        >>> solutions = report.get_solution_data()
+
+        """
+        if not setup:
+            setup = self._post_app._app.nominal_sweep
+        rep = None
+        if "AC R/L Fields" in self._templates or "RL Fields" in self._templates:
+            if self._post_app._app.design_type == DesignType.Q3D:
+                rep = report_field.Fields(self._post_app, "AC R/L Fields", setup)
+            else:
+                rep = report_field.Fields(self._post_app, "RL Fields", setup)
+            rep.polyline = polyline
+            rep.expressions = self._retrieve_default_expressions(expressions, rep, setup)
+        return rep
+
+    @pyaedt_function_handler()
+    def far_field(
+        self,
+        expressions: str | list = None,
+        setup: str | None = None,
+        sphere_name: str = None,
+        source_context: str = None,
+        **variations,
+    ) -> FarField:
+        """Create a Far Field Report object.
+
+        Parameters
+        ----------
+        expressions : str or list
+            Expression List to add into the report. The expression can be any of the available formula
+            you can enter into the Electronics Desktop Report Editor.
+        setup : str, optional
+            Name of the setup. The default is ``None``, in which case the ``nominal_adaptive``
+            setup is used. Be sure to build a setup string in the form of
+            ``"SetupName : SetupSweep"``, where ``SetupSweep`` is the sweep name to
+            use in the export or ``LastAdaptive``.
+        sphere_name : str, optional
+            Name of the sphere to create the far field on.
+        source_context : str, optional
+            Name of the active source to create the far field on.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modules.report_templates.FarField`
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Hfss
+        >>> hfss = Hfss(my_project)
+        >>> report = hfss.post.reports_by_category.far_field("GainTotal", "Setup : LastAdaptive", "3D_Sphere")
+        >>> report.primary_sweep = "Phi"
+        >>> report.create()
+        >>> solutions = report.get_solution_data()
+
+        """
+        if not setup:
+            setup = self._post_app._app.nominal_sweep
+        rep = None
+        if "Far Fields" in self._templates:
+            setup = self._post_app._get_setup_from_sweep_name(setup)
+            rep = report_field.FarField(self._post_app, "Far Fields", setup, **variations)
+            rep.far_field_sphere = sphere_name
+            rep.source_context = source_context
+            rep.report_type = "Radiation Pattern"
+            if expressions:
+                if isinstance(expressions, list):
+                    rep.expressions = expressions
+                else:
+                    rep.expressions = [expressions]
+            else:
+                rep.expressions = self._retrieve_default_expressions(expressions, rep, setup)
+        return rep
+
+    @pyaedt_function_handler()
+    def antenna_parameters(
+        self, expressions: str | list = None, setup: str | None = None, infinite_sphere: str = None
+    ) -> AntennaParameters:
+        """Create an Antenna Parameters Report object.
+
+        Parameters
+        ----------
+        expressions : str or list
+            Expression List to add into the report. The expression can be any of the available formula
+            you can enter into the Electronics Desktop Report Editor.
+        setup : str, optional
+            Name of the setup. The default is ``None``, in which case the ``nominal_adaptive``
+            setup is used. Be sure to build a setup string in the form of
+            ``"SetupName : SetupSweep"``, where ``SetupSweep`` is the sweep name to
+            use in the export or ``LastAdaptive``.
+        infinite_sphere : str, optional
+            Name of the sphere to compute antenna parameters on.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modules.report_templates.AntennaParameters`
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Hfss
+        >>> hfss = Hfss(my_project)
+        >>> report = hfss.post.reports_by_category.antenna_parameters("GainTotal", "Setup : LastAdaptive", "3D_Sphere")
+        >>> report.create()
+        >>> solutions = report.get_solution_data()
+
+        """
+        if not setup:
+            setup = self._post_app._app.nominal_sweep
+        rep = None
+        if "Antenna Parameters" in self._templates:
+            rep = report_field.AntennaParameters(self._post_app, "Antenna Parameters", setup, infinite_sphere)
+            rep.expressions = self._retrieve_default_expressions(expressions, rep, setup)
+        return rep
+
+    @pyaedt_function_handler()
+    def near_field(self, expressions: str | list = None, setup: str | None = None) -> NearField:
+        """Create a Field Report object.
+
+        Parameters
+        ----------
+        expressions : str or list
+            Expression List to add into the report. The expression can be any of the available formula
+            you can enter into the Electronics Desktop Report Editor.
+        setup : str, optional
+            Name of the setup. The default is ``None``, in which case the ``nominal_adaptive``
+            setup is used. Be sure to build a setup string in the form of
+            ``"SetupName : SetupSweep"``, where ``SetupSweep`` is the sweep name to
+            use in the export or ``LastAdaptive``.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modules.report_templates.NearField`
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Hfss
+        >>> hfss = Hfss(my_project)
+        >>> report = hfss.post.reports_by_category.near_field("GainTotal", "Setup : LastAdaptive", "NF_1")
+        >>> report.primary_sweep = "Phi"
+        >>> report.create()
+        >>> solutions = report.get_solution_data()
+
+        """
+        if not setup:
+            setup = self._post_app._app.nominal_sweep
+        rep = None
+        if "Near Fields" in self._templates:
+            rep = report_field.NearField(self._post_app, "Near Fields", setup)
+            rep.expressions = self._retrieve_default_expressions(expressions, rep, setup)
+        return rep
+
+    @pyaedt_function_handler()
+    def modal_solution(self, expressions: str | list = None, setup: str | None = None) -> Standard:
+        """Create a Standard or Default Report object.
+
+        Parameters
+        ----------
+        expressions : str or list
+            Expression List to add into the report. The expression can be any of the available formula
+            you can enter into the Electronics Desktop Report Editor.
+        setup : str, optional
+            Name of the setup. The default is ``None``, in which case the ``nominal_adaptive``
+            setup is used. Be sure to build a setup string in the form of
+            ``"SetupName : SetupSweep"``, where ``SetupSweep`` is the sweep name to
+            use in the export or ``LastAdaptive``.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modules.report_templates.Standard`
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Hfss
+        >>> hfss = Hfss(my_project)
+        >>> report = hfss.post.reports_by_category.modal_solution("dB(S(1,1))")
+        >>> report.create()
+        >>> solutions = report.get_solution_data()
+
+        """
+        if not setup:
+            setup = self._post_app._app.nominal_sweep
+        rep = None
+        if "Modal Solution Data" in self._templates:
+            rep = report_standard.Standard(self._post_app, "Modal Solution Data", setup)
+            rep.expressions = self._retrieve_default_expressions(expressions, rep, setup)
+        return rep
+
+    @pyaedt_function_handler()
+    def terminal_solution(self, expressions: str | list = None, setup: str | None = None) -> Standard:
+        """Create a Standard or Default Report object.
+
+        Parameters
+        ----------
+        expressions : str or list
+            Expression List to add into the report. The expression can be any of the available formula
+            you can enter into the Electronics Desktop Report Editor.
+        setup : str, optional
+            Name of the setup. The default is ``None``, in which case the ``nominal_adaptive``
+            setup is used. Be sure to build a setup string in the form of
+            ``"SetupName : SetupSweep"``, where ``SetupSweep`` is the sweep name to
+            use in the export or ``LastAdaptive``.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modules.report_templates.Standard`
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Hfss
+        >>> hfss = Hfss(my_project)
+        >>> report = hfss.post.reports_by_category.terminal_solution("dB(S(1,1))")
+        >>> report.create()
+        >>> solutions = report.get_solution_data()
+
+        """
+        if not setup:
+            setup = self._post_app._app.nominal_sweep
+        rep = None
+        if "Terminal Solution Data" in self._templates:
+            rep = report_standard.Standard(self._post_app, "Terminal Solution Data", setup)
+            rep.expressions = self._retrieve_default_expressions(expressions, rep, setup)
+        return rep
+
+    @pyaedt_function_handler()
+    def eigenmode(self, expressions: str | list = None, setup: str | None = None) -> Standard:
+        """Create a Standard or Default Report object.
+
+        Parameters
+        ----------
+        expressions : str or list
+            Expression List to add into the report. The expression can be any of the available formula
+            you can enter into the Electronics Desktop Report Editor.
+        setup : str, optional
+            Name of the setup. The default is ``None``, in which case the ``nominal_adaptive``
+            setup is used. Be sure to build a setup string in the form of
+            ``"SetupName : SetupSweep"``, where ``SetupSweep`` is the sweep name to
+            use in the export or ``LastAdaptive``.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modules.report_templates.Standard`
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Hfss
+        >>> hfss = Hfss(my_project)
+        >>> report = hfss.post.reports_by_category.eigenmode("dB(S(1,1))")
+        >>> report.create()
+        >>> solutions = report.get_solution_data()
+
+        """
+        if not setup:
+            setup = self._post_app._app.nominal_sweep
+        rep = None
+        if "Eigenmode Parameters" in self._templates:
+            rep = report_standard.Standard(self._post_app, "Eigenmode Parameters", setup)
+            rep.expressions = self._retrieve_default_expressions(expressions, rep, setup)
+        return rep
+
+    @pyaedt_function_handler()
+    def statistical_eye_contour(
+        self, expressions: str | list = None, setup: str | None = None, quantity_type: int = 3
+    ) -> AMIConturEyeDiagram | bool:
+        """Create a standard statistical AMI contour plot.
+
+        Parameters
+        ----------
+        expressions : str
+            Expression to add into the report. The expression can be any of the available formula
+            you can enter into the Electronics Desktop Report Editor.
+        setup : str, optional
+            Name of the setup. The default is ``None``, in which case the ``nominal_adaptive``
+            setup is used. Be sure to build a setup string in the form of
+            ``"SetupName : SetupSweep"``, where ``SetupSweep`` is either the sweep
+            name to use in the export or ``LastAdaptive``.
+        quantity_type : int, optional
+            For AMI analysis only, the quantity type. The default is ``3``. Options are:
+
+            - ``0`` for Initial Wave
+            - ``1`` for Wave after Source
+            - ``2`` for Wave after Channel
+            - ``3`` for Wave after Probe.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modules.report_templates.AMIConturEyeDiagram`
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> cir = Circuit()
+        >>> new_eye = cir.post.reports_by_category.statistical_eye_contour("V(Vout)")
+        >>> new_eye.unit_interval = "1e-9s"
+        >>> new_eye.time_stop = "100ns"
+        >>> new_eye.create()
+
+        """
+        if not setup:
+            for setup in self._post_app._app.setups:
+                if "AMIAnalysis" in setup.props or "QuickEyeAnalysis" in setup.props:
+                    setup = setup.name
+                    break
+
+            if not setup:
+                self._post_app._app.logger.error("AMI analysis is needed to create this report.")
+                return False
+
+        if isinstance(expressions, list):
+            expressions = expressions[0]
+        report_cat = "Standard"
+        rep = report_eye.AMIConturEyeDiagram(self._post_app, report_cat, setup)
+        rep.quantity_type = quantity_type
+        rep.expressions = self._retrieve_default_expressions(expressions, rep, setup)
+
+        return rep
+
+    @pyaedt_function_handler()
+    def eye_diagram(
+        self,
+        expressions: str | list = None,
+        setup: str | None = None,
+        quantity_type: int = 3,
+        statistical_analysis: bool = True,
+        unit_interval: str = "1ns",
+    ) -> EyeDiagram | AMIEyeDiagram | None:
+        """Create a Standard or Default Report object.
+
+        Parameters
+        ----------
+        expressions : str
+            Expression to add into the report. The expression can be any of the available formula
+            you can enter into the Electronics Desktop Report Editor.
+        setup : str, optional
+            Name of the setup. The default is ``None``, in which case the ``nominal_adaptive``
+            setup is used. Be sure to build a setup string in the form of
+            ``"SetupName : SetupSweep"``, where ``SetupSweep`` is the sweep name to
+            use in the export or ``LastAdaptive``.
+        quantity_type : int, optional
+            For AMI Analysis only, specify the quantity type. Options are: 0 for Initial Wave,
+            1 for Wave after Source, 2 for Wave after Channel and 3 for Wave after Probe. Default is 3.
+        statistical_analysis : bool, optional
+            For AMI Analysis only, whether to plot the statistical eye plot or transient eye plot.
+            The default is ``True``.
+        unit_interval : str, optional
+            Unit interval for the eye diagram.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modules.report_templates.AMIEyeDiagram` or None
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> cir = Circuit()
+        >>> new_eye = cir.post.reports_by_category.eye_diagram("V(Vout)")
+        >>> new_eye.unit_interval = "1e-9s"
+        >>> new_eye.time_stop = "100ns"
+        >>> new_eye.create()
+
+        """
+        if not setup:
+            setup = self._post_app._app.nominal_sweep
+
+        rep = None
+
+        if "Eye Diagram" in self._templates:
+            setup_props = self._post_app._app.get_setup(setup).props
+            if "AMIAnalysis" in setup_props or "QuickEyeAnalysis" in setup_props:
+                report_cat = "Eye Diagram"
+                if statistical_analysis:
+                    report_cat = "Statistical Eye"
+                rep = report_eye.AMIEyeDiagram(self._post_app, report_cat, setup)
+                rep.quantity_type = quantity_type
+                rep.expressions = self._retrieve_default_expressions(expressions, rep, setup)
+                return rep
+            else:
+                rep = report_eye.EyeDiagram(self._post_app, "Eye Diagram", setup)
+            rep.unit_interval = unit_interval
+            rep.expressions = self._retrieve_default_expressions(expressions, rep, setup)
+            return rep
+        return rep
+
+    @pyaedt_function_handler()
+    def spectral(self, expressions: str | list = None, setup: str = None) -> Spectral:
+        """Create a Spectral Report object.
+
+        Parameters
+        ----------
+        expressions : str or list, optional
+            Expression List to add into the report. The expression can be any of the available formula
+            you can enter into the Electronics Desktop Report Editor.
+        setup : str, optional
+            Name of the setup. The default is ``None``, in which case the ``nominal_adaptive``
+            setup is used. Be sure to build a setup string in the form of
+            ``"SetupName : SetupSweep"``, where ``SetupSweep`` is the sweep name to
+            use in the export or ``LastAdaptive``.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modules.report_templates.Spectrum`
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> cir = Circuit()
+        >>> new_eye = cir.post.reports_by_category.spectral("V(Vout)")
+        >>> new_eye.create()
+
+        """
+        if not setup:
+            setup = self._post_app._app.nominal_sweep
+        rep = None
+        if "Spectrum" in self._templates:
+            rep = self._post_app._get_report_object(expressions=expressions, setup_sweep_name=setup, domain="Spectrum")
+            # rep = ansys.aedt.core.visualization.report.standard.Spectral(self._post_app, "Spectrum", setup)
+            # rep.expressions = self._retrieve_default_expressions(expressions, rep, setup)
+        return rep
+
+    @pyaedt_function_handler()
+    def emi_receiver(self, expressions: str | list = None, setup_name: str = None) -> EMIReceiver:
+        """Create an EMI receiver report.
+
+        Parameters
+        ----------
+        expressions : str or list, optional
+            One or more expressions to add into the report. An expression can be any of the formulas that
+            can be entered into the Electronics Desktop Report Editor.
+        setup_name : str, optional
+            Name of the setup. The default is ``None``, in which case the ``nominal_adaptive``
+            setup is used. Be sure to build a setup string in the form of
+            ``"SetupName : SetupSweep"``, where ``SetupSweep`` is either the sweep name
+            to use in the export or ``LastAdaptive``.
+
+        Returns
+        -------
+        :class:`ansys.aedt.core.modules.report_templates.EMIReceiver`
+
+        Examples
+        --------
+        >>> from ansys.aedt.core import Circuit
+        >>> cir = Circuit()
+        >>> new_eye = cir.post.emi_receiver()
+        >>> new_eye.create()
+
+        """
+        if not setup_name:
+            setup_name = self._post_app._app.nominal_sweep
+        rep = None
+        if "EMIReceiver" in self._templates and self._post_app._app.desktop_class.aedt_version_id > "2023.2":
+            rep = report_emi.EMIReceiver(self._post_app, "EMIReceiver", setup_name)
+            if not expressions:
+                expressions = f"Average[{rep.net}]"
+            else:
+                if not isinstance(expressions, list):
+                    expressions = [expressions]
+                pattern = r"\w+\[(.*?)\]"
+                for expression in expressions:
+                    match = re.search(pattern, expression)
+                    if match:
+                        net_name = match.group(1)
+                        rep.net = net_name
+            rep.expressions = self._retrieve_default_expressions(expressions, rep, setup_name)
+
+        return rep
+
+    @pyaedt_function_handler()
+    def circuit_netlist(self, setup: str, expressions: str | list = None, domain: str = None) -> CircuitNetlistReport:
+        """Create a Circuit Netlist Report object.
+
+        Parameters
+        ----------
+        setup : str
+            Name of the analysis type.
+            Specify the name of the analysis as listed
+            in :class:`ansys.aedt.core.generic.aedt_constants.CircuitNetlistConstants`.
+        expressions : str or list, optional
+            One or more expressions to add into the report.
+        domain : str, optional
+            Domain of the report. The default is ``None``, in which case
+            the domain is set to ``"Sweep"`` or ``"Time"`` for transient analysis.
+
+        Returns
+        -------
+            :class:`ansys.aedt.core.modules.report_templates.netlist.CircuitNetlistReport`
+
+        Examples
+        --------
+        Initialize Circuit Netlist.
+        >>> from ansys.aedt.core import CircuitNetlist
+        >>> cir = CircuitNetlist(version="2026.1")
+        Create a report object (not in AEDT) for a transient analysis.
+        >>> new_report = cir.post.reports_by_category.circuit_netlist(
+        ...     expressions="V(net_20,0)", setup="NexximTransient", domain="Time", primary_sweep_variable="Time"
+        ... )
+        Set time range for the report.
+        >>> new_report.time_start = "0us"
+        >>> new_report.time_stop = "10us"
+        Create the report in AEDT.
+        >>> assert new_report.create()
+        >>> cir.release_desktop(False, False)
+
+        """
+        if setup not in CircuitNetlistConstants.solution_types:
+            raise ValueError(
+                f"For Circuit Netlist design, setup_sweep_name should be one of "
+                f"{CircuitNetlistConstants.solution_types.keys()}"
+            )
+
+        rep = report_netlist.CircuitNetlistReport(self._post_app, "Standard", setup, expressions)
+        rep.expressions = self._retrieve_default_expressions(expressions, rep, setup)
+
+        if not domain:
+            domain = "Sweep"
+            if setup == "NexximTransient":
+                domain = "Time"
+        rep.domain = domain
+        return rep

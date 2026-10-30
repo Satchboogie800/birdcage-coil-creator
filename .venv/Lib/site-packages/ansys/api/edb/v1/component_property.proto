@@ -1,0 +1,52 @@
+// Proto file representing the EDB Component Property class
+
+syntax = "proto3";
+
+// Package
+package ansys.api.edb.v1;
+
+// Imports
+import "ansys/api/edb/v1/edb_messages.proto";
+import "ansys/api/edb/v1/model.proto";
+
+// Component Property service definition
+service ComponentPropertyService {
+  // summary: Clone a component property
+  // io_flags:
+  //   - buffer
+  //   - returns_future
+  //   - write_no_cache_invalidation
+  rpc Clone(EDBObjMessage) returns (EDBObjMessage) {}
+
+  // summary: Get Package mounting offset
+  // io_flags:
+  //   - cache
+  rpc GetPackageMountingOffset(EDBObjMessage) returns (ValueMessage) {}
+  
+  // io_flags:
+  //   - buffer
+  rpc SetPackageMountingOffset(ValuePropertyMessage) returns (google.protobuf.Empty) {}
+
+  // summary: Get Package def
+  // io_flags:
+  //   - cache
+  rpc GetPackageDef(EDBObjMessage) returns (EDBObjMessage) {}
+  
+  // io_flags:
+  //   - buffer
+  rpc SetPackageDef(PointerPropertyMessage) returns (google.protobuf.Empty) {}
+
+  // summary: Get Model
+  // io_flags:
+  //   - cache
+  rpc GetModel(EDBObjMessage) returns (ComponentPropModelMessage) {}
+  
+  // io_flags:
+  //   - buffer
+  rpc SetModel(PointerPropertyMessage) returns (google.protobuf.Empty) {}
+}
+
+message ComponentPropModelMessage {
+  EDBObjMessage model = 1;
+  ModelType model_type = 2;
+}

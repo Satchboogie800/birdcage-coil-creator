@@ -1,0 +1,16 @@
+// Proto file representing the DielectricMaterialModel class
+
+syntax = "proto3";
+
+// Package
+package ansys.api.edb.v1;
+
+// Imports
+import "ansys/api/edb/v1/edb_messages.proto";
+
+service DielectricMaterialModelService {
+  // summary: Get the dielectric material model type
+  // io_flags:
+  //   - cache
+  rpc GetType(EDBObjMessage) returns (google.protobuf.Int32Value) {}
+}

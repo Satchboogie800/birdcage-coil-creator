@@ -1,0 +1,56 @@
+// Proto file representing the layout obj instance class
+
+syntax = "proto3";
+
+package ansys.api.edb.v1;
+
+import "ansys/api/edb/v1/edb_messages.proto";
+import "ansys/api/edb/v1/refs.proto";
+import "ansys/api/edb/v1/point_data.proto";
+import "ansys/api/edb/v1/layout_obj_instance_geometry.proto";
+
+service LayoutObjInstanceService {
+
+  // summary: Get layers
+  // io_flags:
+  //   - cache
+  rpc GetLayers(EDBObjMessage) returns (EDBObjCollectionMessage) {}
+  
+  // io_flags:
+  //   - read_no_cache
+  rpc StreamLayers(EDBObjMessage) returns (stream EDBObjCollectionMessage) {}
+
+  // summary: Get geometries
+  // io_flags:
+  //   - cache
+  rpc GetGeometries(LayerRefPropertyMessage) returns (FetchedLayoutObjInstanceGeometriesMessage) {}
+
+  // summary: Get context
+  // io_flags:
+  //   - cache
+  rpc GetContext(EDBObjMessage) returns (StringsMessage) {}
+
+  // summary: Get layout instance context
+  // io_flags:
+  //   - cache
+  rpc GetLayoutInstanceContext(EDBObjMessage) returns (EDBObjMessage) {}
+
+  // summary: Get layout object
+  // io_flags:
+  //   - cache
+  rpc GetLayoutObj(EDBObjMessage) returns (EDBObjMessage) {}
+
+  // summary: Get bounding box
+  // io_flags:
+  //   - cache
+  rpc GetBBox(BoolPropertyMessage) returns (BoxMessage) {}
+}
+
+message FetchedLayoutObjInstanceGeometryMessage {
+  LayoutObjInstanceGeometryMessage geometry = 1;
+  int64 type = 2;
+}
+
+message FetchedLayoutObjInstanceGeometriesMessage {
+  repeated FetchedLayoutObjInstanceGeometryMessage geometries = 1;
+}

@@ -1,0 +1,32 @@
+[project]
+name = "birdcage-coil-creator"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Daniel", email = "daniel.struck@gmx.net" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "matplotlib>=3.11.2",
+    "nicegui>=3.18.0",
+    "numpy>=2.5.4",
+    "pandas>=3.1.0",
+    "plotly>=7.1.0",
+    "pyaedt>=1.9.0",
+    "pydantic>=2.14.2",
+    "pywebview>=6.2.1",
+    "scipy>=1.18.1",
+]
+
+[project.scripts]
+birdcage-coil-creator = "birdcage_coil_creator:main"
+
+[build-system]
+requires = ["uv_build>=0.13.6,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+]
