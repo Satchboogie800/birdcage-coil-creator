@@ -1,0 +1,49 @@
+# Birdcage coil from the bachelor's thesis: 16 legs, 29 x 29 cm, 64 MHz
+# All lengths in mm, capacitances in pF.
+
+[geometry]
+n_legs = 16
+radius_mm = 120.0          # coil radius
+length_mm = 300.0          # total coil length incl. end rings
+ring_width_mm = 20.0       # end-ring width (axial)
+leg_width_mm = 20.0        # leg width (arc length)
+cap_gap_mm = 4.0           # capacitor gap length (along current direction)
+feed_island_mm = 4.0       # conductor island between C1 and C2 at the feeds
+
+[conductor]
+kind = "finite"            # "pec", "finite" or "layered"
+material = "copper"
+thickness_um = 35.0        # only used for "layered"
+
+[capacitors]
+c_ring_pF = 101.25         # start value for tuning
+n = 1.1                    # matching ratio: C1 = C_ring*(1+n)/n, C2 = C1*n
+
+[feeds]
+angles_deg = [0.0, 90.0]   # quadrature feeds
+ring = "Bot"               # "Bot" or "Top"
+impedance_ohm = 50.0
+
+[air]
+cylinder_margin_radial_mm = 50.0
+cylinder_margin_axial_mm = 100.0
+cylinder_segments = 24     # polygon instead of a true circle
+boundary = "radiation"
+boundary_distance_mm = 1200.0   # ~λ/4 at 64 MHz
+
+[mesh]
+gap_max_mm = 4.0           # capacitor and port sheets (= cap_gap / 2)
+conductor_max_mm = 20.0    # rungs and rings (= leg_width / 2)
+air_cylinder_max_mm = 80.0
+
+[probe]
+radius_fraction = 0.4      # probe cylinder radius / coil radius
+height_fraction = 0.4      # probe cylinder height / coil length
+
+[env]
+aedt_version = "2023.2"
+project_name = "Birdcage_script_test"
+design_name = "Test_Coil_24x30"
+non_graphical = false
+new_desktop = false
+cores = 4

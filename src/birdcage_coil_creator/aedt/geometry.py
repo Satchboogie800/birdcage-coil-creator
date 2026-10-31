@@ -13,13 +13,15 @@ from birdcage_coil_creator.config import CoilConfig
 # ----------------------------------------------------------------------------
 @dataclass
 class CoilObjects:
-    """What build_coil() created. mesh.py and setups.py need these names."""
     conductor: str = ""
     cap_sheets: list[str] = field(default_factory=list)
     port_sheets: list[str] = field(default_factory=list)
     port_names: list[str] = field(default_factory=list)
+    port_lines: list[list[list[float]]] = field(default_factory=list)   # NEW
     air_cylinder: str = ""
     region: str = ""
+    probe_region: str = ""                                             # NEW
+    probe_center: str = ""
 
     @property
     def gap_sheets(self) -> list[str]:
@@ -40,7 +42,6 @@ class CoilBuilder:
         self.objects = CoilObjects()
         self._tools = []                  # objects that get cut out of the conductor
         self._cap_jobs = []               # (sheet, integration line, capacitor variable)
-        self._port_jobs = []              # (sheet, integration line, port name)
 
     # ---------------- main sequence ----------------
     def build(self) -> CoilObjects:
@@ -52,8 +53,8 @@ class CoilBuilder:
         self.hfss.modeler.subtract(self.objects.conductor, self._tools, keep_originals=False)
         self._assign_conductor_boundary()
         self._assign_capacitors()
-        self._assign_ports()
         self._create_air()
+        self._create_probes()
         return self.objects
 
     # ---------------- design variables ----------------
@@ -157,7 +158,10 @@ class CoilBuilder:
             port_z, c2_z = z0 + w / 2, z0
 
         sp = self._gap_sheet(f"{port_name}_sheet", th, b1, b2, port_z, w / 2)
-        self._port_jobs.append((sp, self._int_line(th, b1, b2, port_z + w / 4), port_name))
+        self.objects.port_sheets.append(sp.name)
+        self.objects.port_names.append(port_name)
+        self.objects.port_lines.append(self._int_line(th, b1, b2, port_z + w / 4))
+
 
         s2 = self._gap_sheet(f"C2_{ring}{k}", th, b1, b2, c2_z, w / 2)
         self._cap_jobs.append((s2, self._int_line(th, b1, b2, c2_z + w / 4), "C2"))
@@ -187,14 +191,22 @@ class CoilBuilder:
             bnd.update()
             self.objects.cap_sheets.append(sheet.name)
 
-    def _assign_ports(self):
-        for sheet, line, port_name in self._port_jobs:
-            self.hfss.lumped_port(
-                assignment=sheet.name, create_port_sheet=False, integration_line=line,
-                impedance=self.cfg.feeds.impedance_ohm, name=port_name, renormalize=True,
-            )
-            self.objects.port_sheets.append(sheet.name)
-            self.objects.port_names.append(port_name)
+    def _create_probes(self):
+        """Central probe region and centre point for mode classification (non-model)."""
+        g, p = self.geo, self.cfg.probe
+        r = p.radius_fraction * g.radius_mm
+        h = p.height_fraction * g.length_mm
+        z_mid = g.length_mm / 2
+
+        region = self.hfss.modeler.create_cylinder(
+            orientation="Z", origin=[0, 0, z_mid - h / 2],
+            radius=r, height=h, num_sides=16, name="ProbeRegion",
+        )
+        region.model = False  # helper object: not part of the simulation
+        self.objects.probe_region = region.name
+
+        center = self.hfss.modeler.create_point([0, 0, z_mid], name="ProbeCenter")
+        self.objects.probe_center = center.name
 
     # ---------------- air ----------------
     def _create_air(self):
@@ -226,3 +238,20 @@ class CoilBuilder:
 def build_coil(hfss: Hfss, cfg: CoilConfig) -> CoilObjects:
     """Build the complete coil in an open HFSS design and return the object names."""
     return CoilBuilder(hfss, cfg).build()
+
+def assign_ports(hfss: Hfss, cfg: CoilConfig, objects: CoilObjects) -> None:
+    """Driven design: turn the port sheets into lumped ports."""
+    for sheet, line, name in zip(objects.port_sheets, objects.port_lines, objects.port_names):
+        hfss.lumped_port(
+            assignment=sheet, create_port_sheet=False, integration_line=line,
+            impedance=cfg.feeds.impedance_ohm, name=name, renormalize=True,
+        )
+
+
+def terminate_ports_with_resistors(hfss: Hfss, cfg: CoilConfig, objects: CoilObjects) -> None:
+    """Eigenmode design (optional): load the port positions with 50 Ω instead of leaving them open."""
+    for sheet, line, name in zip(objects.port_sheets, objects.port_lines, objects.port_names):
+        hfss.assign_lumped_rlc_to_sheet(
+            sheet, start_direction=line, rlc_type="Parallel",
+            resistance=cfg.feeds.impedance_ohm, name=f"R_{name}",
+        )

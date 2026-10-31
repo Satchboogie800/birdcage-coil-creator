@@ -77,6 +77,9 @@ class Feeds(BaseModel):
     ring: Literal["Bot", "Top"] = "Bot"
     impedance_ohm: float = 50.0
 
+class ProbeSettings(BaseModel):
+    radius_fraction: float = Field(0.4, gt=0, lt=1)   # probe cylinder radius / coil radius
+    height_fraction: float = Field(0.4, gt=0, lt=1)   # probe cylinder height / coil length
 
 class MeshSettings(BaseModel):
     gap_max_mm: float | None = None               # default: cap_gap / 2
@@ -94,13 +97,14 @@ class Environment(BaseModel):
 
 
 class CoilConfig(BaseModel):
-    geometry: CoilGeometry = CoilGeometry()
-    conductor: Conductor = Conductor()
-    capacitors: Capacitors = Capacitors()
-    feeds: Feeds = Feeds()
-    air: AirRegion = AirRegion()
-    mesh: MeshSettings = MeshSettings()
-    env: Environment = Environment()
+    geometry: CoilGeometry = Field(default_factory=CoilGeometry)
+    conductor: Conductor = Field(default_factory=Conductor)
+    capacitors: Capacitors = Field(default_factory=Capacitors)
+    feeds: Feeds = Field(default_factory=Feeds)
+    air: AirRegion = Field(default_factory=AirRegion)
+    mesh: MeshSettings = Field(default_factory=MeshSettings)
+    probe: ProbeSettings = Field(default_factory=ProbeSettings)   # NEW
+    env: Environment = Field(default_factory=Environment)
 
     @model_validator(mode="after")
     def _feeds_on_gaps(self):
