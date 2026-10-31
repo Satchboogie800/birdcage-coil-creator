@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 
 from ansys.aedt.core import Hfss
 
-from birdcage_coil_creator.config import CoilConfig
+from birdcage_coil_creator.config import CoilConfig, SolutionKind
 
 
 # ----------------------------------------------------------------------------
@@ -35,9 +35,10 @@ class CoilObjects:
 class CoilBuilder:
     """Creates the coil step by step in an open HFSS design."""
 
-    def __init__(self, hfss: Hfss, cfg: CoilConfig):
+    def __init__(self, hfss: Hfss, cfg: CoilConfig, solution:SolutionKind):
         self.hfss = hfss
         self.cfg = cfg
+        self.solution = solution
         self.geo = cfg.geometry           # shortcut, used everywhere
         self.objects = CoilObjects()
         self._tools = []                  # objects that get cut out of the conductor
@@ -222,22 +223,30 @@ class CoilBuilder:
         )
         self.objects.air_cylinder = cyl.name
 
-        if a.boundary != "radiation":
-            raise NotImplementedError("Only a radiation boundary is implemented so far")
-        d = a.boundary_distance_mm
+
+        if self.solution == "eigenmode":
+            d = a.eigenmode_distance_mm
+        else:
+            d = a.driven_distance_mm
         region = self.hfss.modeler.create_air_region(
             x_pos=d, y_pos=d, z_pos=d, x_neg=d, y_neg=d, z_neg=d, is_percentage=False
         )
         self.objects.region = region.name
-        self.hfss.assign_radiation_boundary_to_objects(region.name, name="Rad")
-
+        if self.solution == "driven":
+            if a.driven_boundary != "radiation":
+                raise NotImplementedError(f"Boundary '{a.driven_boundary}' is not implemented yet")
+            self.hfss.assign_radiation_boundary_to_objects(region.name, name="Rad")
 
 # ----------------------------------------------------------------------------
 # Convenience function
 # ----------------------------------------------------------------------------
-def build_coil(hfss: Hfss, cfg: CoilConfig) -> CoilObjects:
-    """Build the complete coil in an open HFSS design and return the object names."""
-    return CoilBuilder(hfss, cfg).build()
+def build_coil(hfss: Hfss, cfg: CoilConfig, solution: SolutionKind) -> CoilObjects:
+    """Build the complete coil for the given solution type and return the object names."""
+    objects = CoilBuilder(hfss, cfg, solution).build()
+    if solution == "driven":
+        assign_ports(hfss, cfg, objects)
+    return objects
+
 
 def assign_ports(hfss: Hfss, cfg: CoilConfig, objects: CoilObjects) -> None:
     """Driven design: turn the port sheets into lumped ports."""

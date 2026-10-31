@@ -27,9 +27,10 @@ impedance_ohm = 50.0
 [air]
 cylinder_margin_radial_mm = 50.0
 cylinder_margin_axial_mm = 100.0
-cylinder_segments = 24     # polygon instead of a true circle
-boundary = "radiation"
-boundary_distance_mm = 1200.0   # ~λ/4 at 64 MHz
+cylinder_segments = 24
+driven_boundary = "radiation"
+driven_distance_mm = 1200.0    
+eigenmode_distance_mm = 550.0
 
 [mesh]
 gap_max_mm = 4.0           # capacitor and port sheets (= cap_gap / 2)

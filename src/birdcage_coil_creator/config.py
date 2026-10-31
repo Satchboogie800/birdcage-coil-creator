@@ -4,6 +4,8 @@ from typing import Literal
 from pydantic import BaseModel, Field, computed_field, model_validator
 
 
+SolutionKind = Literal["eigenmode", "driven"]
+
 class CoilGeometry(BaseModel):
     """
     Creates the basic coil model based on the default.toml file, later based on UI input.
@@ -53,9 +55,9 @@ class AirRegion(BaseModel):
     cylinder_margin_radial_mm: float = 50.0
     cylinder_margin_axial_mm: float = 100.0
     cylinder_segments: int = 24       # polygon instead of a true circle (coarser surface mesh)
-    boundary: Literal["radiation", "pml"] = "radiation"
-    boundary_distance_mm: float = 1200.0
-
+    driven_boundary: Literal["radiation", "pml"] = "radiation"
+    driven_distance_mm: float = 1200.0
+    eigenmode_distance_mm: float = 550.0
 
 class Capacitors(BaseModel):
     c_ring_pF: float = Field(105.0, gt=0)
@@ -94,6 +96,8 @@ class Environment(BaseModel):
     non_graphical: bool = False
     new_desktop: bool = False
     cores: int = 4
+
+
 
 
 class CoilConfig(BaseModel):
